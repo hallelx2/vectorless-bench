@@ -1,0 +1,112 @@
+"""A tiny multi-provider completion helper for the baselines that actually call
+an LLM (full-context retriever, LLM-judge).
+
+It mirrors what llmgate does for the engine — route by model name, pull real
+token usage from the provider, price it with the shared table — so an LLM-using
+baseline is costed on exactly the same basis as Vectorless. Providers are
+imported lazily; only the one you use needs to be installed.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+from .pricing import compute
+from .schema import Usage
+
+
+@dataclass
+class Completion:
+    text: str
+    usage: Usage
+
+
+def _provider(model: str) -> str:
+    if model.startswith("claude"):
+        return "anthropic"
+    if model.startswith("gemini"):
+        return "gemini"
+    return "openai"  # gpt-*, o3/o4-*
+
+
+def complete(
+    model: str,
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 1024,
+    temperature: float = 0.0,
+    json_mode: bool = False,
+) -> Completion:
+    p = _provider(model)
+    if p == "anthropic":
+        return _anthropic(model, system, user, max_tokens, temperature)
+    if p == "gemini":
+        return _gemini(model, system, user, max_tokens, temperature)
+    return _openai(model, system, user, max_tokens, temperature, json_mode)
+
+
+def _openai(model, system, user, max_tokens, temperature, json_mode) -> Completion:
+    from openai import OpenAI  # type: ignore
+
+    client = OpenAI()
+    kwargs = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    r = client.chat.completions.create(**kwargs)
+    u = r.usage
+    in_tok, out_tok = int(u.prompt_tokens), int(u.completion_tokens)
+    return Completion(
+        text=r.choices[0].message.content or "",
+        usage=_usage(model, in_tok, out_tok),
+    )
+
+
+def _anthropic(model, system, user, max_tokens, temperature) -> Completion:
+    import anthropic  # type: ignore
+
+    client = anthropic.Anthropic()
+    r = client.messages.create(
+        model=model,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        messages=[{"role": "user", "content": user}],
+    )
+    text = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+    in_tok, out_tok = int(r.usage.input_tokens), int(r.usage.output_tokens)
+    return Completion(text=text, usage=_usage(model, in_tok, out_tok))
+
+
+def _gemini(model, system, user, max_tokens, temperature) -> Completion:
+    from google import genai  # type: ignore
+
+    client = genai.Client()
+    r = client.models.generate_content(
+        model=model,
+        contents=f"{system}\n\n{user}",
+        config={"max_output_tokens": max_tokens, "temperature": temperature},
+    )
+    um = getattr(r, "usage_metadata", None)
+    in_tok = int(getattr(um, "prompt_token_count", 0) or 0)
+    out_tok = int(getattr(um, "candidates_token_count", 0) or 0)
+    return Completion(text=r.text or "", usage=_usage(model, in_tok, out_tok))
+
+
+def _usage(model: str, in_tok: int, out_tok: int) -> Usage:
+    return Usage(
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        total_tokens=in_tok + out_tok,
+        cost_usd=compute(model, in_tok, out_tok),
+        llm_calls=1,
+    )

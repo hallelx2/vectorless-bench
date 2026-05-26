@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vectorless-bench"
+version = "0.1.0"
+description = "An advanced benchmarking suite for the Vectorless reasoning-based RAG engine"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Core deps are intentionally tiny: the harness, metrics, and smoke test run on
+# stdlib alone. Everything that needs a network or a heavy library is an extra,
+# imported lazily by the system that uses it.
+dependencies = [
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# token counting + the LLM-using systems (full_context, judge)
+llm = ["tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39"]
+# the vector-RAG baseline
+vector = ["openai>=1.40", "psycopg[binary]>=3.1", "pgvector>=0.3", "tiktoken>=0.7"]
+# the BM25 baseline
+bm25 = ["rank-bm25>=0.2.2"]
+# the system under test
+vectorless = ["vectorless-sdk>=0.1"]
+# public datasets (FinanceBench) + PDF extraction for the downloader
+data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31"]
+# plots in the report
+viz = ["matplotlib>=3.8"]
+# everything
+all = [
+  "tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39",
+  "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
+  "vectorless-sdk>=0.1", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31",
+  "matplotlib>=3.8",
+]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+vlbench = "vectorless_bench.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vectorless_bench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

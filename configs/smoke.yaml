@@ -1,0 +1,16 @@
+# Smoke / CI config: tiny, fast, no external services.
+# Runs the harness end-to-end against the in-repo fixture corpus with the mock
+# retriever. Use this as the regression gate on every engine/bench change.
+#
+#   vlbench run --config configs/smoke.yaml
+dataset: fixtures
+systems:
+  - mock
+k: 5
+repeats: 3          # exercises the determinism axis
+cold: true
+out_dir: runs
+model: claude-haiku-4-5
+system_params:
+  mock:
+    accuracy: 1.0

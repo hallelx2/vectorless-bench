@@ -1,0 +1,44 @@
+# Self-contained bench stack: the benchmark + a pgvector Postgres for the
+# vector_rag baseline. Bring your own API keys via .env.
+#
+#   docker compose build
+#   # one-time: fetch FinanceBench source docs into ./data
+#   docker compose run --rm --entrypoint python bench scripts/download_financebench.py
+#   # run the benchmark (writes ./results)
+#   docker compose run --rm bench run --config configs/financebench.yaml --out /results
+#
+# The `vectorless` system needs a reachable engine — point VECTORLESS_BASE_URL in
+# .env at your deployed server, or add an engine service to this file.
+services:
+  pg:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: vlbench
+      POSTGRES_PASSWORD: vlbench
+      POSTGRES_DB: vlbench
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vlbench"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # no published port needed; the bench talks to it over the compose network
+
+  bench:
+    build: .
+    depends_on:
+      pg:
+        condition: service_healthy
+    env_file:
+      # optional: keys may instead come from the host environment / Secret Manager
+      - path: .env
+        required: false
+    environment:
+      # overrides .env so the baseline always finds the bundled Postgres
+      VLBENCH_PG_DSN: postgresql://vlbench:vlbench@pg:5432/vlbench
+      VLBENCH_PAGEINDEX_PATH: /opt/PageIndex
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+      - ./results:/results
+    # ENTRYPOINT is `vlbench`; CMD args below are appended to it
+    command: ["run", "--config", "configs/financebench.yaml", "--out", "/results"]

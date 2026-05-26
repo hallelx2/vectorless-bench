@@ -1,0 +1,21 @@
+# runs & artifacts
+runs/
+*.png
+
+# fetched datasets (large; reproducible via scripts/)
+data/financebench/docs/
+data/financebench/*.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# env
+.env

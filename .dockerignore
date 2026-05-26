@@ -1,0 +1,13 @@
+.git
+runs/
+data/financebench/docs/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+.env
