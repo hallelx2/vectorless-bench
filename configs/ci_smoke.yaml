@@ -1,0 +1,23 @@
+# CI smoke config: fast, deterministic, no external services.
+#
+# Runs the fixture corpus through `mock` (oracle, end-to-end harness exerciser)
+# and `bm25` (free lexical baseline) so the deploy gate can spot regressions
+# in either the harness or the scoring pipeline without paying for Gemini /
+# waiting on HuggingFace cache. Should complete in well under 2 minutes.
+#
+# Used by:
+#   - local dev:   vlbench run --config configs/ci_smoke.yaml --out runs
+#   - deploy gate: .github/workflows/deploy.yml in vectorless-deploy
+#                  (compared against bench/baselines/prod.json there)
+dataset: fixtures
+systems:
+  - mock
+  - bm25
+k: 5
+repeats: 1
+cold: true
+out_dir: runs
+model: claude-haiku-4-5
+system_params:
+  mock:
+    accuracy: 1.0
