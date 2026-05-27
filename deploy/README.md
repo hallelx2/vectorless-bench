@@ -5,6 +5,31 @@ keys + Postgres, so the natural place is a cloud VM you fire and forget. The flo
 **bundle (Docker) → run on a GCE VM → results land in GCS → fetch + open the HTML
 report.**
 
+> **Simplest option:** you don't actually need a VM. The engine is a public Cloud
+> Run service and ingest time is server-side, so a VM buys nothing but
+> orchestration. To just get numbers, run locally: `load_secrets.py` → load the
+> `.env` into your shell → `vlbench run --config configs/financebench_gemini.yaml`.
+
+## ajicore deployment specifics (verified)
+
+- **Project:** `project-03250746-ec5b-4198-990` (name `ajicore`).
+- **Engine:** `https://vectorless-server-2rzh3kctga-uc.a.run.app` (Cloud Run, public).
+- **Secrets:** keys live inside the `server-config` Secret Manager secret —
+  `auth.api_key` (engine bearer) and `engine.llm.gemini.api_key` (Gemini). Keys are
+  **Gemini-only**: `vector_rag` (OpenAI embeddings) and `pageindex` (OpenAI-default
+  tree builder) need an OpenAI key added before they can run.
+- **Multi-tenant engine:** every call needs an `X-Vectorless-Org` header (the
+  control plane injects it normally; the bench injects its own org `vlbench`).
+- **IAP-only SSH:** the `ajicore-allow-iap` firewall allows tcp:22 from the IAP
+  range **only for VMs tagged `dokploy`** — so `run_on_gce.sh` tags the VM
+  `dokploy` and tunnels SSH through IAP. Without the tag, SSH silently fails.
+- **`dokploy-01`** is a production VM — do not touch it. Bench VMs are `vlbench-*`.
+
+> **Windows caveat:** run `run_on_gce.sh` from **WSL or a Linux/Mac shell**, not
+> Git Bash. Git Bash (MSYS) rewrites the POSIX paths it passes to gcloud's bundled
+> PuTTY `pscp`/`plink`, breaking `scp` (`pscp: unable to open ~/...`). From WSL the
+> script works as-is. (Host-key prompts are already auto-accepted via piped `y`.)
+
 ## 1. Bundle (Docker)
 
 The `Dockerfile` builds one image with the suite, every baseline's deps, and the

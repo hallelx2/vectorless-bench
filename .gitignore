@@ -19,3 +19,6 @@ dist/
 
 # env
 .env
+
+# vendored SDK source (staged for Docker builds by deploy/vendor_sdk.sh)
+vendor/

@@ -18,14 +18,26 @@ WORKDIR /app
 # if it isn't published to your PyPI, the build still succeeds and you mount it
 # or set PYTHONPATH at run time (only the `vectorless` system needs it).
 COPY . /app
-RUN pip install ".[llm,vector,bm25,data,viz]" \
-    && (pip install "vectorless-sdk>=0.1" \
-        || echo "WARN: vectorless-sdk not installed — mount it for the vectorless system")
+RUN pip install ".[llm,vector,bm25,data,viz]"
 
-# Vendor PageIndex's actual repo (not on PyPI) and install its requirements, so
-# the pageindex baseline runs their real tree builder.
+# The vectorless SDK isn't on PyPI. Prefer the monorepo source staged into the
+# build context by deploy/vendor_sdk.sh (./vendor/vectorless-sdk); fall back to
+# PyPI best-effort so the image still builds for baseline-only runs.
+RUN if [ -d vendor/vectorless-sdk ]; then \
+        pip install ./vendor/vectorless-sdk; \
+    else \
+        pip install "vectorless-sdk>=0.1" || echo "WARN: vectorless-sdk unavailable — the vectorless system will be skipped"; \
+    fi
+
+# Vendor PageIndex's actual repo (not on PyPI) so the pageindex baseline can run
+# their real tree builder. Their requirements.txt self-conflicts (pins
+# python-dotenv==1.2.2 while litellm needs 1.0.1), so drop that pin and let pip
+# resolve it. The whole step is best-effort: pageindex isn't needed for every run
+# (e.g. Gemini-only), and a failure here must not block the build.
 RUN git clone --depth 1 https://github.com/VectifyAI/PageIndex.git /opt/PageIndex \
-    && pip install -r /opt/PageIndex/requirements.txt
+    && grep -v '^python-dotenv' /opt/PageIndex/requirements.txt > /tmp/pi-req.txt \
+    && pip install -r /tmp/pi-req.txt \
+    || echo "WARN: PageIndex install failed; the pageindex system will be unavailable"
 
 # results land here; mount a volume so they survive the container
 VOLUME ["/results"]
