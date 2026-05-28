@@ -19,11 +19,16 @@ systems:
   - full_context
 
 k: 5
-repeats: 2
+repeats: 1
 cold: true
-limit: 20            # raise toward 150 once validated; watch full_context cost
+limit: 1             # one doc only — multi-axis summaries (engine PR #22)
+                     # make per-section summarize calls 3-4x slower than
+                     # before. 4-doc bench was timing out at 2400s/doc.
+                     # Validate vectorless on one doc first, then plan
+                     # whether to thin the summarize prompt or shard
+                     # ingest across multiple bench machines.
 sample_seed: 0
-out_dir: /results
+out_dir: runs
 
 model: gemini-2.5-flash
 embedding_model: text-embedding-3-small   # unused unless vector_rag is enabled
@@ -38,5 +43,5 @@ system_params:
     # (vectorless-engine PR #15), per-doc ingest wall time roughly
     # halves. 2400s (40 min) gives generous headroom for a 200-section
     # 10-K without the previous ridiculous 90-min ceiling.
-    ingest_timeout: 2400
+    ingest_timeout: 5400
     query_timeout: 180
