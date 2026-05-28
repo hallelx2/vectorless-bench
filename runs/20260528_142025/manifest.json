@@ -1,0 +1,79 @@
+{
+  "created_at": "2026-05-28T13:22:06.437144+00:00",
+  "bench_git_sha": "2cf6e2b",
+  "dataset": "financebench",
+  "dataset_size": 4,
+  "systems": [
+    "bm25",
+    "full_context"
+  ],
+  "k": 5,
+  "repeats": 1,
+  "cold": true,
+  "model": "gemini-2.5-flash",
+  "judge_model": null,
+  "embedding_model": "text-embedding-3-small",
+  "sample_seed": 0,
+  "pricing_fingerprint": "6ddb36311e3c",
+  "python": "3.13.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "package_versions": {
+    "vectorless-sdk": "1.0.1",
+    "openai": "2.37.0",
+    "anthropic": "0.84.0",
+    "datasets": "4.8.5",
+    "rank-bm25": "0.2.2",
+    "psycopg": null,
+    "tiktoken": "0.13.0"
+  },
+  "warnings": [
+    "80 FinanceBench docs missing from data\\financebench\\docs (run scripts/download_financebench.py). Their questions will be skipped. First few: ['ADOBE_2015_10K', 'ADOBE_2016_10K', 'ADOBE_2017_10K']",
+    "80 FinanceBench docs missing from data\\financebench\\docs (run scripts/download_financebench.py). Their questions will be skipped. First few: ['ADOBE_2015_10K', 'ADOBE_2016_10K', 'ADOBE_2017_10K']"
+  ],
+  "extra": {
+    "config": {
+      "dataset": "financebench",
+      "systems": [
+        "bm25",
+        "full_context"
+      ],
+      "k": 5,
+      "repeats": 1,
+      "cold": true,
+      "limit": 4,
+      "sample_seed": 0,
+      "out_dir": "runs",
+      "model": "gemini-2.5-flash",
+      "embedding_model": "text-embedding-3-small",
+      "judge": false,
+      "judge_model": "gpt-4o",
+      "gen_model": "gpt-4o-mini",
+      "dataset_params": {
+        "docs_dir": "data/financebench/docs"
+      },
+      "system_params": {
+        "full_context": {
+          "model": "gemini-2.5-flash",
+          "max_context_tokens": 900000
+        },
+        "vectorless": {
+          "org": "vlbench",
+          "ingest_timeout": 5400,
+          "query_timeout": 180
+        },
+        "vectorless_pageindex": {
+          "org": "vlbench",
+          "ingest_timeout": 5400,
+          "query_timeout": 240,
+          "max_hops": 6,
+          "page_content_limit": 16000
+        },
+        "pageindex": {
+          "mode": "oss",
+          "repo_path": "C:/tmp/PageIndex",
+          "model": "gemini/gemini-2.5-flash"
+        }
+      }
+    }
+  }
+}

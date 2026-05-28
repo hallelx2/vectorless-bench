@@ -36,6 +36,8 @@ class VectorlessRetriever:
         max_parallel_calls: Optional[int] = None,
         server_cache_disabled: bool = False,
         ingest_timeout: float = 600.0,
+        query_timeout: float = 180.0,
+        org: str = "vlbench",
         **_: object,
     ) -> None:
         try:
@@ -46,7 +48,20 @@ class VectorlessRetriever:
                 "pip install vectorless-sdk"
             ) from e
 
-        self._client = VectorlessClient(api_key=api_key, base_url=base_url)
+        self._client = VectorlessClient(
+            api_key=api_key, base_url=base_url, timeout=query_timeout
+        )
+        self.org = org
+        # Engine is multi-tenant — every request needs X-Vectorless-Org.
+        # The SDK doesn't expose this option, so we inject it on the
+        # underlying httpx client.
+        try:
+            self._client._transport._client.headers["X-Vectorless-Org"] = org
+        except AttributeError:
+            try:
+                self._client._client.headers["X-Vectorless-Org"] = org
+            except AttributeError:
+                pass
         self.model = model
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
@@ -60,13 +75,28 @@ class VectorlessRetriever:
     # -- lifecycle ---------------------------------------------------------
     def setup(self, corpus: List[Doc]) -> None:
         import time
+        import pathlib
 
         t0 = time.perf_counter()
         for d in corpus:
+            # Prefer the original PDF when present — that's the path the
+            # engine's parser + pdftable table extractor were tuned for.
+            # Pre-extracted .txt loses page boundaries and tables before
+            # the engine ever sees the document.
+            path = getattr(d, "path", None)
+            if path and pathlib.Path(path).is_file() and path.lower().endswith(".pdf"):
+                source = pathlib.Path(path).read_bytes()
+                filename = pathlib.Path(path).name
+                content_type = "application/pdf"
+            else:
+                source = d.content.encode("utf-8")
+                filename = f"{d.doc_id}.md"
+                content_type = d.content_type
+
             resp = self._client.ingest_document(
-                source=d.content.encode("utf-8"),
-                filename=f"{d.doc_id}.md",
-                content_type=d.content_type,
+                source=source,
+                filename=filename,
+                content_type=content_type,
             )
             doc_id = resp.document_id
             self._client.wait_for_ready(doc_id, timeout=self.ingest_timeout)

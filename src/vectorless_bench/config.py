@@ -39,7 +39,7 @@ class RunConfig:
     def params_for(self, system: str) -> Dict[str, Any]:
         """Factory kwargs for a system: shared models + its own overrides."""
         base: Dict[str, Any] = {}
-        if system in ("vectorless", "full_context"):
+        if system in ("vectorless", "vectorless_pageindex", "full_context"):
             base["model"] = self.model
         if system == "vector_rag":
             base["embedding_model"] = self.embedding_model

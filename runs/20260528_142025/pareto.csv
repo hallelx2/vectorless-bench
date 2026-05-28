@@ -1,0 +1,5 @@
+system,primary_quality,mean_cost_usd,p50_latency_ms,quality_per_1k_usd,cost_per_correct_usd
+bm25,0.167,0.000000,91.1,∞,∞
+full_context,0.250,0.023457,21451.6,0.01,0.093828
+vectorless,0.000,0.000000,0.0,∞,∞
+vectorless_pageindex,0.000,0.000000,0.0,∞,∞

@@ -1,0 +1,220 @@
+{
+  "bm25": {
+    "n": 4,
+    "errors": 0,
+    "quality": {
+      "primary": 0.16666666666666669,
+      "primary_ci": {
+        "mean": 0.16666666666666669,
+        "lo": 0.0,
+        "hi": 0.33333333333333337
+      },
+      "precision@5": 0.1,
+      "recall@5": 0.5,
+      "f1@5": 0.16666666666666669,
+      "ndcg@5": 0.4077324383928644,
+      "mrr": 0.375,
+      "hit@5": 0.5
+    },
+    "citation": {
+      "span_in_top1": 0.25,
+      "path_correct_top1": 0.0,
+      "near_miss_rate": 0.0
+    },
+    "abstention": {
+      "abstained": 0.0
+    },
+    "cost": {
+      "mean_cost_usd": 0.0,
+      "total_cost_usd": 0.0,
+      "mean_tokens": 0.0,
+      "mean_llm_calls": 0.0,
+      "cost_per_correct_usd": Infinity,
+      "quality_per_1k_usd": Infinity
+    },
+    "latency_ms": {
+      "p50": 91.12949998234399,
+      "p95": 150.20563499128912,
+      "p99": 154.00088699359912,
+      "mean": 96.71912499470636,
+      "max": 154.94969999417663
+    },
+    "determinism": {
+      "exact_match": null,
+      "mean_jaccard": null
+    },
+    "ingest": {
+      "setup_seconds": 7.287478499987628,
+      "setup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "llm_calls": 0,
+        "embedding_tokens": 0
+      }
+    },
+    "by_domain": {
+      "finance": {
+        "primary": 0.16666666666666669,
+        "n": 4
+      }
+    }
+  },
+  "full_context": {
+    "n": 4,
+    "errors": 0,
+    "quality": {
+      "primary": 0.25,
+      "primary_ci": {
+        "mean": 0.25,
+        "lo": 0.0,
+        "hi": 0.75
+      },
+      "precision@5": 0.25,
+      "recall@5": 0.25,
+      "f1@5": 0.25,
+      "ndcg@5": 0.25,
+      "mrr": 0.25,
+      "hit@5": 0.25
+    },
+    "citation": {
+      "span_in_top1": 0.25,
+      "path_correct_top1": 0.0,
+      "near_miss_rate": 0.0
+    },
+    "abstention": {
+      "abstained": 0.0
+    },
+    "cost": {
+      "mean_cost_usd": 0.023456924999999997,
+      "total_cost_usd": 0.09382769999999999,
+      "mean_tokens": 155132.25,
+      "mean_llm_calls": 1.0,
+      "cost_per_correct_usd": 0.09382769999999999,
+      "quality_per_1k_usd": 0.010657833454299744
+    },
+    "latency_ms": {
+      "p50": 21451.616850012215,
+      "p95": 28651.232254982457,
+      "p99": 29459.439010976348,
+      "mean": 22019.793999992544,
+      "max": 29661.49069997482
+    },
+    "determinism": {
+      "exact_match": null,
+      "mean_jaccard": null
+    },
+    "ingest": {
+      "setup_seconds": 0.0,
+      "setup_usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "llm_calls": 0,
+        "embedding_tokens": 0
+      }
+    },
+    "by_domain": {
+      "finance": {
+        "primary": 0.25,
+        "n": 4
+      }
+    }
+  },
+  "vectorless": {
+    "n": 0,
+    "errors": 4,
+    "quality": {
+      "primary": 0.0,
+      "primary_ci": {
+        "mean": 0.0,
+        "lo": 0.0,
+        "hi": 0.0
+      },
+      "precision@5": 0.0,
+      "recall@5": 0.0,
+      "f1@5": 0.0,
+      "ndcg@5": 0.0,
+      "mrr": 0.0,
+      "hit@5": 0.0
+    },
+    "citation": {
+      "span_in_top1": 0.0,
+      "path_correct_top1": 0.0,
+      "near_miss_rate": 0.0
+    },
+    "abstention": {
+      "abstained": 0.0
+    },
+    "cost": {
+      "mean_cost_usd": 0.0,
+      "total_cost_usd": 0,
+      "mean_tokens": 0.0,
+      "mean_llm_calls": 0.0,
+      "cost_per_correct_usd": Infinity,
+      "quality_per_1k_usd": Infinity
+    },
+    "latency_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "determinism": {
+      "exact_match": null,
+      "mean_jaccard": null
+    },
+    "ingest": {},
+    "by_domain": {}
+  },
+  "vectorless_pageindex": {
+    "n": 0,
+    "errors": 4,
+    "quality": {
+      "primary": 0.0,
+      "primary_ci": {
+        "mean": 0.0,
+        "lo": 0.0,
+        "hi": 0.0
+      },
+      "precision@5": 0.0,
+      "recall@5": 0.0,
+      "f1@5": 0.0,
+      "ndcg@5": 0.0,
+      "mrr": 0.0,
+      "hit@5": 0.0
+    },
+    "citation": {
+      "span_in_top1": 0.0,
+      "path_correct_top1": 0.0,
+      "near_miss_rate": 0.0
+    },
+    "abstention": {
+      "abstained": 0.0
+    },
+    "cost": {
+      "mean_cost_usd": 0.0,
+      "total_cost_usd": 0,
+      "mean_tokens": 0.0,
+      "mean_llm_calls": 0.0,
+      "cost_per_correct_usd": Infinity,
+      "quality_per_1k_usd": Infinity
+    },
+    "latency_ms": {
+      "p50": 0.0,
+      "p95": 0.0,
+      "p99": 0.0,
+      "mean": 0.0,
+      "max": 0.0
+    },
+    "determinism": {
+      "exact_match": null,
+      "mean_jaccard": null
+    },
+    "ingest": {},
+    "by_domain": {}
+  }
+}

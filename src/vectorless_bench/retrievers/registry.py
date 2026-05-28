@@ -43,6 +43,12 @@ def _vectorless(**cfg: Any) -> Retriever:
     return VectorlessRetriever(**cfg)
 
 
+def _vectorless_pageindex(**cfg: Any) -> Retriever:
+    from .vectorless_pageindex import VectorlessPageIndexRetriever
+
+    return VectorlessPageIndexRetriever(**cfg)
+
+
 def _vector_rag(**cfg: Any) -> Retriever:
     from .vector_rag import VectorRagRetriever
 
@@ -69,6 +75,7 @@ def _pageindex(**cfg: Any) -> Retriever:
 
 register("mock", _mock)
 register("vectorless", _vectorless)
+register("vectorless_pageindex", _vectorless_pageindex)
 register("vector_rag", _vector_rag)
 register("bm25", _bm25)
 register("full_context", _full_context)

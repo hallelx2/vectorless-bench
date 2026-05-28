@@ -1,0 +1,72 @@
+# Head-to-head FinanceBench run for PR-C of the PageIndex-style redesign.
+#
+# Compares:
+#   - vectorless              — default chunked-tree strategy (the baseline
+#                                we're trying to beat with the new endpoint).
+#   - vectorless_pageindex    — the engine's new page-based agentic loop
+#                                (/v1/answer/pageindex), which navigates
+#                                page ranges instead of a section tree.
+#   - pageindex               — VectifyAI/PageIndex (their real upstream
+#                                code). Best-effort: their tree builder
+#                                defaults to OpenAI; if no key, this system
+#                                will fail to set up and the run continues.
+#   - bm25                    — free lexical floor.
+#   - full_context            — quality ceiling at the cost ceiling.
+#
+# Gemini-only deployment: every system that hits the engine or full-context
+# runs on gemini-2.5-flash, paid out of the same daily quota. PageIndex-style
+# uses ~5 LLM calls per query, the default chunked-tree ~2-4; full-context is
+# one call per query but with a multi-K-token prompt. Plan the bench size to
+# leave headroom in the 10K/day generate_requests quota.
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless
+  - vectorless_pageindex
+  - pageindex
+  - bm25
+  - full_context
+
+k: 5
+repeats: 1
+cold: true
+limit: 4             # all four local 10-Ks. Ingest is shared across the two
+                     # vectorless systems (same engine, same documents), so
+                     # this is ~one ingest pass + a few questions per doc.
+sample_seed: 0
+out_dir: runs
+
+model: gemini-2.5-flash
+
+system_params:
+  full_context:
+    model: gemini-2.5-flash
+    max_context_tokens: 900000   # Gemini 2.5 Flash has a very large context
+
+  vectorless:
+    org: vlbench
+    # Multi-axis summaries (engine PR #22) slow per-section summarize calls
+    # ~3-4x, so a 200-section 10-K needs generous headroom on first ingest.
+    ingest_timeout: 5400
+    query_timeout: 180
+
+  vectorless_pageindex:
+    org: vlbench
+    ingest_timeout: 5400
+    # Higher query timeout — the agentic loop can hop several times before
+    # emitting `done`, and each hop is a synchronous LLM call.
+    query_timeout: 240
+    max_hops: 6
+    page_content_limit: 16000
+
+  pageindex:
+    # Run the real upstream code (VectifyAI/PageIndex) self-hosted.
+    mode: oss
+    repo_path: C:/tmp/PageIndex
+    # LiteLLM-style routing string so PageIndex's tree builder uses Gemini
+    # instead of its hard-coded OpenAI default. If this doesn't work in their
+    # build, the system will fail to set up and we'll still compare the
+    # other four.
+    model: gemini/gemini-2.5-flash
