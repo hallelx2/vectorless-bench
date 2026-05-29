@@ -166,6 +166,75 @@ def test_k_caps_returned_sections(monkeypatch):
     assert len(res.sections) == 1  # two citations available, k=1 caps to one
 
 
+def _payload_with_duplicate_section() -> dict:
+    """A response shaped like the FinanceBench 'sec_363... ×5' miss: several
+    citations whose distinct page ranges all anchor to the SAME first
+    section_id. Without dedup these became 5 identical RetrievedSections and
+    deflated precision@5."""
+    p = _payload()
+    p["citations"] = [
+        {"start_page": 100, "end_page": 101, "section_ids": ["sec_363"], "quote": "a"},
+        {"start_page": 102, "end_page": 103, "section_ids": ["sec_363"], "quote": "b"},
+        {"start_page": 104, "end_page": 105, "section_ids": ["sec_363"], "quote": "c"},
+        {"start_page": 106, "end_page": 107, "section_ids": ["sec_363"], "quote": "d"},
+        {"start_page": 108, "end_page": 109, "section_ids": ["sec_363"], "quote": "e"},
+        {"start_page": 5, "end_page": 6, "section_ids": ["sec_50"], "quote": "f"},
+    ]
+    return p
+
+
+def test_duplicate_section_ids_are_deduped(monkeypatch):
+    r = _build(monkeypatch)
+    r._http = _FakeHTTP(_FakeResponse(200, _payload_with_duplicate_section()))
+    r._doc_ids["AMZN"] = "doc_x"
+    r._paths["AMZN"] = {}
+
+    q = Question(qid="q1", doc_id="AMZN", question="q?")
+    res = r.retrieve(q, k=5, cold=True)
+
+    # sec_363 cited five times collapses to ONE section; sec_50 is the other.
+    ids = [s.section_id for s in res.sections]
+    assert ids == ["sec_363", "sec_50"], ids
+    # No section id repeats.
+    assert len(ids) == len(set(ids))
+    # The kept sec_363 row is the FIRST occurrence (page 100), not a later one.
+    assert res.sections[0].page == 100
+    assert res.sections[0].content == "a"
+
+
+def test_dedup_runs_before_k_cap(monkeypatch):
+    # Five duplicate sec_363 citations + one distinct sec_50. With k=2 the
+    # duplicates must not crowd out sec_50: dedup first, THEN cap.
+    r = _build(monkeypatch)
+    r._http = _FakeHTTP(_FakeResponse(200, _payload_with_duplicate_section()))
+    r._doc_ids["AMZN"] = "doc_x"
+    r._paths["AMZN"] = {}
+
+    q = Question(qid="q1", doc_id="AMZN", question="q?")
+    res = r.retrieve(q, k=2, cold=True)
+    ids = [s.section_id for s in res.sections]
+    assert ids == ["sec_363", "sec_50"], ids
+
+
+def test_empty_section_ids_not_collapsed(monkeypatch):
+    # Citations with no section_id keep their own row — they still carry a
+    # distinct page anchor — so they are NOT deduped together.
+    p = _payload()
+    p["citations"] = [
+        {"start_page": 10, "end_page": 11, "section_ids": [], "quote": "x"},
+        {"start_page": 20, "end_page": 21, "section_ids": [], "quote": "y"},
+    ]
+    r = _build(monkeypatch)
+    r._http = _FakeHTTP(_FakeResponse(200, p))
+    r._doc_ids["AMZN"] = "doc_x"
+    r._paths["AMZN"] = {}
+
+    q = Question(qid="q1", doc_id="AMZN", question="q?")
+    res = r.retrieve(q, k=5, cold=True)
+    assert len(res.sections) == 2
+    assert [s.page for s in res.sections] == [10, 20]
+
+
 def test_http_error_is_recorded_not_raised(monkeypatch):
     r = _build(monkeypatch)
     r._http = _FakeHTTP(_FakeResponse(404, {}))
