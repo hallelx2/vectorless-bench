@@ -23,9 +23,15 @@ RUN pip install ".[llm,vector,bm25,data,viz]" \
         || echo "WARN: vectorless-sdk not installed — mount it for the vectorless system")
 
 # Vendor PageIndex's actual repo (not on PyPI) and install its requirements, so
-# the pageindex baseline runs their real tree builder.
-RUN git clone --depth 1 https://github.com/VectifyAI/PageIndex.git /opt/PageIndex \
-    && pip install -r /opt/PageIndex/requirements.txt
+# the pageindex baseline runs their real tree builder. Best-effort: upstream's
+# pinned requirements.txt sometimes has internal conflicts (e.g. litellm vs
+# python-dotenv → ResolutionImpossible). The clone is cheap and only the
+# `pageindex` baseline needs these deps, so a failed install must NOT break the
+# image for every other system. Retry without the broken pins, else skip.
+RUN git clone --depth 1 https://github.com/VectifyAI/PageIndex.git /opt/PageIndex || true; \
+    pip install -r /opt/PageIndex/requirements.txt \
+      || pip install litellm pymupdf PyPDF2 python-dotenv pyyaml tiktoken openai \
+      || echo "WARN: PageIndex deps skipped — the 'pageindex' baseline will be unavailable"
 
 # results land here; mount a volume so they survive the container
 VOLUME ["/results"]

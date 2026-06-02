@@ -19,8 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 # token counting + the LLM-using systems (full_context, judge)
 llm = ["tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39"]
-# the vector-RAG baseline
-vector = ["openai>=1.40", "psycopg[binary]>=3.1", "pgvector>=0.3", "tiktoken>=0.7"]
+# the vector-RAG baseline. sentence-transformers powers the local
+# (no-API-key) embedding option, e.g. embedding_model="st:BAAI/bge-small-en-v1.5".
+vector = ["openai>=1.40", "psycopg[binary]>=3.1", "pgvector>=0.3", "tiktoken>=0.7", "sentence-transformers>=2.7"]
 # the BM25 baseline
 bm25 = ["rank-bm25>=0.2.2"]
 # the system under test
@@ -33,6 +34,7 @@ viz = ["matplotlib>=3.8"]
 all = [
   "tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39",
   "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
+  "sentence-transformers>=2.7",
   "vectorless-sdk>=0.1", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31",
   "matplotlib>=3.8",
 ]

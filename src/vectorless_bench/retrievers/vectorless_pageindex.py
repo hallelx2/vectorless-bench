@@ -180,14 +180,37 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
         """Project the page endpoint's citation list onto the bench's section
         shape. Order is preserved (engine sorts by start_page) and capped at k
         so head-to-head fairness against k=5 baselines is intact.
+
+        Deduplication by section_id is load-bearing for precision. A page-based
+        answer can emit several citations whose distinct page ranges all anchor
+        to the SAME first section_id (overlapping sections, or — before the
+        engine-side fix — the literal same range cited N times). Mapping each to
+        its own RetrievedSection produced N identical sections and tanked
+        precision@k (the FinanceBench "sec_363... ×5" miss). We keep only the
+        first section per distinct section_id, preserving order.
+
+        Citations with no section_id still carry a distinct page anchor, so they
+        are NOT collapsed together — only repeated, non-empty section ids are
+        deduped. The k-cap is applied AFTER dedup so a spray of duplicates can't
+        crowd out genuinely distinct sections.
         """
         out: List[RetrievedSection] = []
-        for c in citations[:k]:
+        seen_ids: set[str] = set()
+        for c in citations:
+            if len(out) >= k:
+                break
             sec_ids = c.get("section_ids") or []
             # First section_id anchors the citation in the structural tree
             # for path matching; the page range stays in `page` so the
             # bench's per-page anchors still hit.
             sid = str(sec_ids[0]) if sec_ids else ""
+            # Dedup on non-empty ids only: a repeated section id is the
+            # precision-killer we are removing. Empty-id citations keep their
+            # own row (their page anchor is still distinct).
+            if sid:
+                if sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
             start_page = c.get("start_page")
             try:
                 start_page_int = int(start_page) if start_page is not None else None
