@@ -57,6 +57,12 @@ class VectorRagRetriever:
         self._conn = None
         self._table = "vlbench_chunks"
         self._openai = None
+        self._st = None
+        # A "st:<hf-model-id>" embedding_model selects a local
+        # sentence-transformers embedder (free, deterministic, no API key) —
+        # the no-OpenAI path for a fully self-hosted vector-RAG baseline.
+        self._is_local = embedding_model.startswith("st:")
+        self._st_model_id = embedding_model[3:] if self._is_local else ""
 
     # -- embeddings --------------------------------------------------------
     def _client(self):
@@ -66,14 +72,35 @@ class VectorRagRetriever:
             self._openai = OpenAI()
         return self._openai
 
-    def _embed(self, texts: Sequence[str]) -> List[List[float]]:
+    def _st_model(self):
+        if self._st is None:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+
+            self._st = SentenceTransformer(self._st_model_id)
+            # keep self.dim in sync so the pgvector column matches
+            self.dim = int(self._st.get_sentence_embedding_dimension())
+        return self._st
+
+    def _encode(self, texts: Sequence[str]) -> List[List[float]]:
+        """Embed texts via either a local sentence-transformers model or the
+        OpenAI-compatible client, depending on embedding_model."""
+        if self._is_local:
+            vecs = self._st_model().encode(
+                list(texts), normalize_embeddings=True, show_progress_bar=False
+            )
+            return [list(map(float, v)) for v in vecs]
         resp = self._client().embeddings.create(
             model=self.embedding_model, input=list(texts)
         )
+        return [d.embedding for d in resp.data]
+
+    def _embed(self, texts: Sequence[str]) -> List[List[float]]:
+        out = self._encode(texts)
         toks = sum(count_tokens(t, self.embedding_model) for t in texts)
         self.setup_usage.embedding_tokens += toks
+        # local embeddings are free; compute_embedding returns 0 for unpriced
         self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
-        return [d.embedding for d in resp.data]
+        return out
 
     # -- lifecycle ---------------------------------------------------------
     def setup(self, corpus: List[Doc]) -> None:
@@ -172,8 +199,7 @@ class VectorRagRetriever:
 
     def _embed_query(self, q: str) -> List[float]:
         # query embedding cost is tiny; don't fold it into ingest usage
-        resp = self._client().embeddings.create(model=self.embedding_model, input=[q])
-        return resp.data[0].embedding
+        return self._encode([q])[0]
 
     def _pg_query(self, qvec, doc_id, k):
         # the cosine operator (<=>) appears in both SELECT and ORDER BY, so the
