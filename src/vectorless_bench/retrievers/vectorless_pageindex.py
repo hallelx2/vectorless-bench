@@ -1,5 +1,6 @@
 """Vectorless on the page-based agentic strategy — wired through the engine's
-dedicated `POST /v1/answer/pageindex` endpoint.
+dedicated `POST /v1/answer/treewalk` endpoint (renamed from `pageindex` in
+HAL-106; this retriever keeps the historical label for run continuity).
 
 This is the same engine and the same priced model as the default `vectorless`
 retriever, but a different *retrieval strategy*: the model navigates page ranges
@@ -112,7 +113,10 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             "X-Vectorless-Org": self.org,
             "Content-Type": "application/json",
         }
-        url = f"{self._base_url}/v1/answer/pageindex"
+        # The engine renamed this endpoint pageindex → treewalk (HAL-106).
+        # The retriever keeps its historical `vectorless_pageindex` label
+        # for run-comparison continuity, but must POST to the live route.
+        url = f"{self._base_url}/v1/answer/treewalk"
 
         t0 = time.perf_counter()
         try:
@@ -217,12 +221,23 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             except (TypeError, ValueError):
                 start_page_int = None
             quote = (c.get("quote") or "").strip()
+            # Prefer the engine-emitted heading path (HAL-70): the engine now
+            # resolves each citation's primary section to its canonical TOC
+            # heading path and returns it as `title_path`. Fall back to the
+            # locally-reconstructed path (from get_document_tree at ingest)
+            # only when the engine doesn't supply one — older servers, or a
+            # document with no persisted TOC.
+            engine_path = c.get("title_path")
+            if isinstance(engine_path, list) and engine_path:
+                title_path = [str(p) for p in engine_path]
+            else:
+                title_path = path_index.get(sid, []) if sid else []
             out.append(
                 RetrievedSection(
                     content=quote,
                     section_id=sid,
                     title="",
-                    title_path=path_index.get(sid, []) if sid else [],
+                    title_path=title_path,
                     page=start_page_int,
                     score=None,
                 )
