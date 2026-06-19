@@ -1,6 +1,5 @@
-"""Vectorless on the page-based agentic strategy — wired through the engine's
-dedicated `POST /v1/answer/treewalk` endpoint (renamed from `pageindex` in
-HAL-106; this retriever keeps the historical label for run continuity).
+"""Vectorless on the page-based agentic strategy ("treewalk") — wired through
+the engine's dedicated `POST /v1/answer/treewalk` endpoint.
 
 This is the same engine and the same priced model as the default `vectorless`
 retriever, but a different *retrieval strategy*: the model navigates page ranges
@@ -41,8 +40,8 @@ from ..schema import Question, RetrievalResult, RetrievedSection, Usage
 from .vectorless import VectorlessRetriever
 
 
-class VectorlessPageIndexRetriever(VectorlessRetriever):
-    name = "vectorless_pageindex"
+class VectorlessTreewalkRetriever(VectorlessRetriever):
+    name = "vectorless_treewalk"
 
     def __init__(
         self,
@@ -109,13 +108,14 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             body["max_pages_per_fetch"] = int(self.page_content_limit)
 
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
             "X-Vectorless-Org": self.org,
             "Content-Type": "application/json",
         }
-        # The engine renamed this endpoint pageindex → treewalk (HAL-106).
-        # The retriever keeps its historical `vectorless_pageindex` label
-        # for run-comparison continuity, but must POST to the live route.
+        # Only send Authorization when we actually have a key. A self-hosted /
+        # local engine needs no auth, and "Bearer " (empty token) is an illegal
+        # HTTP header value that httpx rejects outright.
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         url = f"{self._base_url}/v1/answer/treewalk"
 
         t0 = time.perf_counter()
@@ -161,7 +161,7 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             sections=sections,
             usage=usage,
             latency_ms=latency,
-            strategy=str(data.get("strategy") or "pageindex"),
+            strategy=str(data.get("strategy") or "treewalk"),
             cold=cold,
             trace={
                 "server_cache_disabled": self.server_cache_disabled,
