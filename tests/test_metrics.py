@@ -72,3 +72,16 @@ def test_path_correct_is_structural_only():
 def test_primary_quality_picks_abstention_for_no_answer():
     assert primary_quality({"abstained": 1.0}, k=5) == 1.0
     assert primary_quality({"f1@5": 0.7}, k=5) == 0.7
+
+
+def test_primary_quality_prefers_judged_answer_correctness():
+    # When the LLM-judge axis ran, judged answer-correctness is the headline and
+    # supersedes BOTH span-F1 and the abstention flag. An answer-first system can
+    # have near-zero span-overlap F1 yet a correct answer; ranking on F1 would
+    # wrongly bury it. This is the bench-correctness fix.
+    assert primary_quality(
+        {"f1@5": 0.1, "abstained": 0.0, "answer_correct": 1.0}, k=5
+    ) == 1.0
+    assert primary_quality({"f1@5": 0.9, "answer_correct": 0.0}, k=5) == 0.0
+    # No judge -> fall back to F1@k (unjudged configs unchanged).
+    assert primary_quality({"f1@5": 0.42}, k=5) == 0.42
