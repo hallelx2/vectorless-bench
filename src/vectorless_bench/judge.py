@@ -40,6 +40,25 @@ _JUDGE_SYSTEM = (
 )
 
 
+def _loads_lenient(text: str) -> dict:
+    """Parse a JSON verdict, tolerating markdown code fences and prose around
+    the object (some models — e.g. GLM — wrap JSON in ```json fences)."""
+    import re
+
+    s = text.strip()
+    s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s).strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", s, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+    return {"correct": False, "faithful": False}
+
+
 @dataclass
 class JudgeResult:
     correct: float
@@ -54,17 +73,27 @@ class Judge:
         self.judge_model = judge_model
 
     def evaluate(
-        self, question: Question, sections: Sequence[RetrievedSection]
+        self,
+        question: Question,
+        sections: Sequence[RetrievedSection],
+        native_answer: Optional[str] = None,
     ) -> JudgeResult:
         usage = Usage()
-        context = "\n\n---\n\n".join(s.content for s in sections) or "(no context)"
-        gen = complete(
-            self.gen_model, _GEN_SYSTEM,
-            f"CONTEXT:\n{context}\n\nQUESTION: {question.question}",
-            max_tokens=400,
-        )
-        usage.add(gen.usage)
-        candidate = gen.text.strip()
+        # Answer-first systems (treewalk) emit their own answer; grade THAT
+        # directly. Re-generating from the retrieved sections would measure a
+        # different pipeline than the one under test and unfairly penalise a
+        # system whose value is the answer, not the section selection.
+        if native_answer is not None and native_answer.strip():
+            candidate = native_answer.strip()
+        else:
+            context = "\n\n---\n\n".join(s.content for s in sections) or "(no context)"
+            gen = complete(
+                self.gen_model, _GEN_SYSTEM,
+                f"CONTEXT:\n{context}\n\nQUESTION: {question.question}",
+                max_tokens=400,
+            )
+            usage.add(gen.usage)
+            candidate = gen.text.strip()
 
         if question.is_no_answer:
             # correct behaviour is to decline; reward INSUFFICIENT
@@ -83,10 +112,7 @@ class Judge:
             max_tokens=200, json_mode=True,
         )
         usage.add(verdict.usage)
-        try:
-            v = json.loads(verdict.text)
-        except json.JSONDecodeError:
-            v = {"correct": False, "faithful": False}
+        v = _loads_lenient(verdict.text)
         return JudgeResult(
             correct=1.0 if v.get("correct") else 0.0,
             faithful=1.0 if v.get("faithful") else 0.0,

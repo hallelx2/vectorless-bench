@@ -159,6 +159,7 @@ class VectorlessTreewalkRetriever(VectorlessRetriever):
             system=self.name,
             query=question.question,
             sections=sections,
+            answer=data.get("answer"),  # treewalk emits its own answer
             usage=usage,
             latency_ms=latency,
             strategy=str(data.get("strategy") or "treewalk"),

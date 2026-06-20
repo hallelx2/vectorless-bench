@@ -133,6 +133,11 @@ class RetrievalResult:
     system: str
     query: str
     sections: List[RetrievedSection] = field(default_factory=list)
+    # Native answer, for systems that produce one (e.g. treewalk's agentic
+    # loop emits the answer directly). When set, the LLM-judge axis grades
+    # THIS answer rather than re-generating one from the sections — the only
+    # fair way to score an answer-first system.
+    answer: Optional[str] = None
     usage: Usage = field(default_factory=Usage)
     latency_ms: float = 0.0
     strategy: str = ""  # "single-pass" | "chunked-tree" | "top-k" | ...

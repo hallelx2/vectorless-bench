@@ -130,7 +130,7 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
     # Judge only on the first repeat: answer quality doesn't need rerunning, and
     # it keeps judge spend from scaling with the determinism repeat count.
     if judge is not None and not result.error and repeat == 0:
-        jr = judge.evaluate(q, result.sections)
+        jr = judge.evaluate(q, result.sections, native_answer=result.answer)
         m["answer_correct"] = jr.correct
         m["answer_faithful"] = jr.faithful
         m["answered"] = jr.answered
