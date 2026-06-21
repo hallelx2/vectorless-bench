@@ -202,6 +202,26 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
                 f"{_fmt(a['judge_usd'], 5)} |"
             )
 
+    # Ingestion speed — the engine's parse+persist throughput (why the engine is
+    # in Go). Only engine-backed systems report it; baselines index in-process.
+    timed = [(s, r) for s, r in _sorted(results)
+             if (r.get("ingest", {}).get("ingest_timing") or {}).get("docs")]
+    if timed:
+        lines.append("\n## Ingestion speed (engine parse + persist)\n")
+        lines.append("Wall-time from upload to `ready` per document (parse → tree "
+                     "build → persist), measured client-side. `MB/s` is total "
+                     "source bytes over total ingest time.\n")
+        lines.append("| System | docs | total MB | total s | mean s/doc | median s | p95 s | MB/s |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for s, r in timed:
+            t = r["ingest"]["ingest_timing"]
+            lines.append(
+                f"| {s} | {t['docs']} | {_fmt(t['total_mb'], 2)} | "
+                f"{_fmt(t['total_seconds'], 1)} | {_fmt(t['mean_seconds'], 2)} | "
+                f"{_fmt(t['median_seconds'], 2)} | {_fmt(t['p95_seconds'], 2)} | "
+                f"{_fmt(t['mb_per_second'], 3)} |"
+            )
+
     lines.append("\n## Retrieval quality\n")
     lines.append(f"| System | P@{k} | R@{k} | F1@{k} | nDCG@{k} | MRR | hit@{k} |")
     lines.append("|---|---|---|---|---|---|---|")
