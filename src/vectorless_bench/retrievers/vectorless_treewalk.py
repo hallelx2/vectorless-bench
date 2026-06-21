@@ -1,5 +1,5 @@
-"""Vectorless on the page-based agentic strategy — wired through the engine's
-dedicated `POST /v1/answer/pageindex` endpoint.
+"""Vectorless on the page-based agentic strategy ("treewalk") — wired through
+the engine's dedicated `POST /v1/answer/treewalk` endpoint.
 
 This is the same engine and the same priced model as the default `vectorless`
 retriever, but a different *retrieval strategy*: the model navigates page ranges
@@ -40,8 +40,8 @@ from ..schema import Question, RetrievalResult, RetrievedSection, Usage
 from .vectorless import VectorlessRetriever
 
 
-class VectorlessPageIndexRetriever(VectorlessRetriever):
-    name = "vectorless_pageindex"
+class VectorlessTreewalkRetriever(VectorlessRetriever):
+    name = "vectorless_treewalk"
 
     def __init__(
         self,
@@ -108,11 +108,15 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             body["max_pages_per_fetch"] = int(self.page_content_limit)
 
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
             "X-Vectorless-Org": self.org,
             "Content-Type": "application/json",
         }
-        url = f"{self._base_url}/v1/answer/pageindex"
+        # Only send Authorization when we actually have a key. A self-hosted /
+        # local engine needs no auth, and "Bearer " (empty token) is an illegal
+        # HTTP header value that httpx rejects outright.
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        url = f"{self._base_url}/v1/answer/treewalk"
 
         t0 = time.perf_counter()
         try:
@@ -155,9 +159,10 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             system=self.name,
             query=question.question,
             sections=sections,
+            answer=data.get("answer"),  # treewalk emits its own answer
             usage=usage,
             latency_ms=latency,
-            strategy=str(data.get("strategy") or "pageindex"),
+            strategy=str(data.get("strategy") or "treewalk"),
             cold=cold,
             trace={
                 "server_cache_disabled": self.server_cache_disabled,
@@ -217,12 +222,23 @@ class VectorlessPageIndexRetriever(VectorlessRetriever):
             except (TypeError, ValueError):
                 start_page_int = None
             quote = (c.get("quote") or "").strip()
+            # Prefer the engine-emitted heading path (HAL-70): the engine now
+            # resolves each citation's primary section to its canonical TOC
+            # heading path and returns it as `title_path`. Fall back to the
+            # locally-reconstructed path (from get_document_tree at ingest)
+            # only when the engine doesn't supply one — older servers, or a
+            # document with no persisted TOC.
+            engine_path = c.get("title_path")
+            if isinstance(engine_path, list) and engine_path:
+                title_path = [str(p) for p in engine_path]
+            else:
+                title_path = path_index.get(sid, []) if sid else []
             out.append(
                 RetrievedSection(
                     content=quote,
                     section_id=sid,
                     title="",
-                    title_path=path_index.get(sid, []) if sid else [],
+                    title_path=title_path,
                     page=start_page_int,
                     score=None,
                 )

@@ -1,7 +1,7 @@
 """Unit tests for the vectorless_pageindex retriever's response mapping.
 
 These don't touch the network: we stub the retriever's httpx client with a
-fake that returns a canned /v1/answer/pageindex payload, then assert that
+fake that returns a canned /v1/answer/treewalk payload, then assert that
 citations are projected onto the bench's RetrievedSection shape correctly
 (content from quote, page from start_page, path from the section-id index)
 and that usage is copied through faithfully.
@@ -135,6 +135,48 @@ def test_citations_map_to_sections(monkeypatch):
     assert res.usage.llm_calls == 5
 
 
+def test_engine_title_path_preferred_over_local_index(monkeypatch):
+    # When the engine emits a citation `title_path` (HAL-70) it wins over the
+    # locally reconstructed path — that's the whole point of the engine now
+    # owning the structural path instead of the consumer guessing it.
+    p = _payload()
+    p["citations"] = [
+        {
+            "start_page": 42,
+            "end_page": 42,
+            "section_ids": ["sec_a"],
+            "title_path": ["Part II", "Item 8", "Statements of Operations"],
+            "quote": "Net revenue was $1,234M.",
+        },
+    ]
+    r = _build(monkeypatch)
+    r._http = _FakeHTTP(_FakeResponse(200, p))
+    r._doc_ids["AMZN"] = "doc_x"
+    # Local index deliberately disagrees — engine path must take precedence.
+    r._paths["AMZN"] = {"sec_a": ["WRONG", "LOCAL", "PATH"]}
+
+    q = Question(qid="q1", doc_id="AMZN", question="q?")
+    res = r.retrieve(q, k=5, cold=True)
+    assert res.sections[0].title_path == ["Part II", "Item 8", "Statements of Operations"]
+
+
+def test_engine_title_path_absent_falls_back_to_local(monkeypatch):
+    # No engine-supplied title_path → fall back to the local reconstructed
+    # index (older server, or a document with no persisted TOC).
+    p = _payload()
+    p["citations"] = [
+        {"start_page": 42, "end_page": 42, "section_ids": ["sec_a"], "quote": "x"},
+    ]
+    r = _build(monkeypatch)
+    r._http = _FakeHTTP(_FakeResponse(200, p))
+    r._doc_ids["AMZN"] = "doc_x"
+    r._paths["AMZN"] = {"sec_a": ["Part II", "Item 8", "Balance Sheet"]}
+
+    q = Question(qid="q1", doc_id="AMZN", question="q?")
+    res = r.retrieve(q, k=5, cold=True)
+    assert res.sections[0].title_path == ["Part II", "Item 8", "Balance Sheet"]
+
+
 def test_request_body_carries_knobs(monkeypatch):
     r = _build(monkeypatch)
     fake = _FakeHTTP(_FakeResponse(200, _payload()))
@@ -146,7 +188,7 @@ def test_request_body_carries_knobs(monkeypatch):
     r.retrieve(q, k=5, cold=True)
 
     sent = fake.calls[-1]
-    assert sent["url"].endswith("/v1/answer/pageindex")
+    assert sent["url"].endswith("/v1/answer/treewalk")
     assert sent["json"]["document_id"] == "doc_x"
     assert sent["json"]["model"] == "gemini-2.5-flash"
     assert sent["json"]["max_hops"] == 6

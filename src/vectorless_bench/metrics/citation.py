@@ -77,8 +77,22 @@ def abstention_metrics(
 def primary_quality(metrics: Dict[str, float], k: int) -> float:
     """The single quality number used for Pareto / quality-per-dollar.
 
-    f1@k for answerable questions; the abstention flag for no-answer questions.
-    Centralised so every downstream summary agrees on what "quality" means."""
+    Centralised so every downstream summary agrees on what "quality" means.
+
+    Precedence:
+    1. **Judged answer-correctness** (`answer_correct`), when the LLM-judge axis
+       is on. This is the only quality measure that's fair across architectures:
+       an answer-first system (treewalk emits its own answer) and a chunk
+       retriever (answer generated from its top-k) are BOTH graded on whether
+       the final answer matches the gold — not on whether they returned the gold
+       passage verbatim. Span-overlap F1 structurally penalises any system whose
+       value is the answer rather than the literal retrieved span, so once a
+       human-meaningful judged score exists it supersedes F1.
+    2. **Correct abstention** for no-answer questions (when unjudged).
+    3. **F1@k** span-overlap retrieval quality (the unjudged default).
+    """
+    if "answer_correct" in metrics:
+        return metrics["answer_correct"]
     if "abstained" in metrics:
         return metrics["abstained"]
     return metrics.get(f"f1@{k}", 0.0)

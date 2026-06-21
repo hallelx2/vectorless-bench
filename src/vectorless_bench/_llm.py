@@ -23,6 +23,8 @@ class Completion:
 
 
 def _provider(model: str) -> str:
+    if model.startswith("glm"):
+        return "glm"  # Zhipu / Z.ai — Anthropic-compatible gateway
     if model.startswith("claude"):
         return "anthropic"
     if model.startswith("gemini"):
@@ -40,11 +42,49 @@ def complete(
     json_mode: bool = False,
 ) -> Completion:
     p = _provider(model)
+    if p == "glm":
+        return _glm(model, system, user, max_tokens, temperature)
     if p == "anthropic":
         return _anthropic(model, system, user, max_tokens, temperature)
     if p == "gemini":
         return _gemini(model, system, user, max_tokens, temperature)
     return _openai(model, system, user, max_tokens, temperature, json_mode)
+
+
+def _glm(model, system, user, max_tokens, temperature) -> Completion:
+    """GLM via the Anthropic-compatible gateway (Z.ai). Lets the LLM-judge
+    axis run on the same provider the engine uses, with no OpenAI key."""
+    import os
+
+    import anthropic  # type: ignore
+
+    base = (
+        os.environ.get("VLBENCH_GLM_BASE_URL")
+        or os.environ.get("VLE_LLM_ANTHROPIC_BASE_URL")
+        or "https://api.z.ai/api/anthropic"
+    )
+    # The anthropic Python SDK appends "/v1/messages" itself, so the base must
+    # NOT end in /v1 (unlike the Go engine's client, whose default base already
+    # has /v1). Strip it so the same env var works for both.
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    key = (
+        os.environ.get("VLBENCH_GLM_API_KEY")
+        or os.environ.get("VLE_LLM_ANTHROPIC_API_KEY")
+        or os.environ.get("GLM_API_KEY", "")
+    )
+    client = anthropic.Anthropic(base_url=base, api_key=key)
+    r = client.messages.create(
+        model=model,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        messages=[{"role": "user", "content": user}],
+    )
+    text = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+    in_tok, out_tok = int(r.usage.input_tokens), int(r.usage.output_tokens)
+    return Completion(text=text, usage=_usage(model, in_tok, out_tok))
 
 
 def _openai(model, system, user, max_tokens, temperature, json_mode) -> Completion:

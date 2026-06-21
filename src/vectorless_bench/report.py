@@ -65,9 +65,17 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
         def avg_metric(name: str) -> float:
             return _mean([r["metrics"].get(name, 0.0) for r in ok if name in r["metrics"]])
 
+        # LLM-judge answer-quality axis. These keys only exist on rows that were
+        # judged (judge: true, first repeat). `judged_n` is how many questions
+        # carried a verdict, so the report can show the axis only when it ran and
+        # never imply a 0 where the judge simply wasn't invoked.
+        judged = [r for r in ok if "answer_correct" in r["metrics"]]
+        judge_usd = sum(float(r["metrics"].get("judge_usd", 0.0)) for r in judged)
+
         results[system] = {
             "n": len(ok),
             "errors": errors,
+            "judged_n": len(judged),
             "quality": {
                 "primary": _mean(qualities),
                 "primary_ci": aggregate.bootstrap_ci(qualities),
@@ -85,6 +93,13 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
             },
             "abstention": {
                 "abstained": avg_metric("abstained"),
+            },
+            "answer": {
+                "judged_n": len(judged),
+                "correct": avg_metric("answer_correct"),
+                "faithful": avg_metric("answer_faithful"),
+                "answered": avg_metric("answered"),
+                "judge_usd": judge_usd,
             },
             "cost": aggregate.cost_summary(costs, qualities, toks, calls),
             "latency_ms": aggregate.percentiles(latencies),
@@ -144,8 +159,17 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
     lines.append(f"# vectorless-bench results\n")
     lines.append(f"Run: `{run_dir.name}` · k={k} · see `manifest.json` for full config.\n")
 
+    judged = any(r["answer"]["judged_n"] > 0 for r in results.values())
+    quality_def = (
+        "LLM-judged answer-correctness (the candidate answer vs the FinanceBench "
+        "gold answer, graded by the judge model)" if judged
+        else "F1@k span-overlap for answerable questions / correct abstention for "
+             "no-answer questions"
+    )
+
     lines.append("## Efficiency frontier (the headline)\n")
-    lines.append("Quality is meaningless without its price. `quality_per_1k_usd` = "
+    lines.append(f"**Quality = {quality_def}.** "
+                 "Quality is meaningless without its price. `quality_per_1k_usd` = "
                  "primary quality bought per $1,000 of query spend (higher is better); "
                  "`$/correct` = spend per correct answer (lower is better).\n")
     lines.append("| System | Quality | $/query | p50 ms | p95 ms | qual/$1k | $/correct | errors |")
@@ -157,6 +181,46 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
             f"{_fmt(r['latency_ms']['p95'], 1)} | {_fmt(r['cost']['quality_per_1k_usd'], 1)} | "
             f"{_fmt(r['cost']['cost_per_correct_usd'], 5)} | {r['errors']} |"
         )
+
+    if judged:
+        lines.append("\n## Answer correctness (LLM-as-judge)\n")
+        lines.append(
+            "The fair cross-architecture axis: every system's final answer is "
+            "graded against the FinanceBench gold answer by the same blind judge "
+            "model. An answer-first system (treewalk) is graded on the answer it "
+            "emits; a pure retriever (bm25, vector_rag) is graded on an answer "
+            "generated from ONLY its top-k. `correct` = factually matches gold; "
+            "`faithful` = supported by the retrieved context; `answered` = did not "
+            "decline. Judge spend is tracked apart from system cost.\n")
+        lines.append("| System | judged n | correct | faithful | answered | judge $ |")
+        lines.append("|---|---|---|---|---|---|")
+        for s, r in _sorted(results):
+            a = r["answer"]
+            lines.append(
+                f"| {s} | {a['judged_n']} | {_fmt(a['correct'])} | "
+                f"{_fmt(a['faithful'])} | {_fmt(a['answered'])} | "
+                f"{_fmt(a['judge_usd'], 5)} |"
+            )
+
+    # Ingestion speed — the engine's parse+persist throughput (why the engine is
+    # in Go). Only engine-backed systems report it; baselines index in-process.
+    timed = [(s, r) for s, r in _sorted(results)
+             if (r.get("ingest", {}).get("ingest_timing") or {}).get("docs")]
+    if timed:
+        lines.append("\n## Ingestion speed (engine parse + persist)\n")
+        lines.append("Wall-time from upload to `ready` per document (parse → tree "
+                     "build → persist), measured client-side. `MB/s` is total "
+                     "source bytes over total ingest time.\n")
+        lines.append("| System | docs | total MB | total s | mean s/doc | median s | p95 s | MB/s |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for s, r in timed:
+            t = r["ingest"]["ingest_timing"]
+            lines.append(
+                f"| {s} | {t['docs']} | {_fmt(t['total_mb'], 2)} | "
+                f"{_fmt(t['total_seconds'], 1)} | {_fmt(t['mean_seconds'], 2)} | "
+                f"{_fmt(t['median_seconds'], 2)} | {_fmt(t['p95_seconds'], 2)} | "
+                f"{_fmt(t['mb_per_second'], 3)} |"
+            )
 
     lines.append("\n## Retrieval quality\n")
     lines.append(f"| System | P@{k} | R@{k} | F1@{k} | nDCG@{k} | MRR | hit@{k} |")
@@ -315,6 +379,18 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
          (f"precision@{k}", f"recall@{k}", f"f1@{k}", f"ndcg@{k}", "mrr", f"hit@{k}")]
         for s, r in sd
     ]
+    judged = any(r["answer"]["judged_n"] > 0 for r in results.values())
+    best_correct = max((r["answer"]["correct"] for _, r in sd), default=0.0)
+    answer_rows = [
+        [(s, "sys"),
+         (r["answer"]["judged_n"], ""),
+         (_fmt(r["answer"]["correct"]),
+          "best" if r["answer"]["correct"] == best_correct and best_correct > 0 else ""),
+         (_fmt(r["answer"]["faithful"]), ""),
+         (_fmt(r["answer"]["answered"]), ""),
+         (_fmt(r["answer"]["judge_usd"], 5), "")]
+        for s, r in sd
+    ]
     cite_rows = [
         [(s, "sys"),
          (_fmt(r["citation"]["span_in_top1"]), ""),
@@ -332,14 +408,27 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
         for s, r in sd
     ]
 
+    quality_def = (
+        "LLM-judged answer-correctness vs the FinanceBench gold answer"
+        if judged
+        else "F1@k (answerable) / correct-abstention (no-answer)"
+    )
+    answer_section = (
+        f"""<h2>Answer correctness (LLM-as-judge)</h2>
+<div class="sub">Every system's final answer graded against the FinanceBench gold answer by the same blind judge. Answer-first systems are graded on their emitted answer; pure retrievers on an answer generated from only their top-k. This is the headline quality axis above.</div>
+{_html_table(["System","judged n","correct","faithful","answered","judge $"], answer_rows)}"""
+        if judged else ""
+    )
+
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>vectorless-bench · {_esc(run_dir.name)}</title><style>{_CSS}</style></head>
 <body><div class="wrap">
 <h1>vectorless-bench results</h1>
-<div class="sub">run <code>{_esc(run_dir.name)}</code> · k={k} · primary quality = F1@k (answerable) / correct-abstention (no-answer)</div>
+<div class="sub">run <code>{_esc(run_dir.name)}</code> · k={k} · primary quality = {quality_def}</div>
 <h2>Efficiency frontier</h2>
 <div class="card">{_frontier_svg(results)}</div>
 {_html_table(["System","Quality","$/query","p50 ms","p95 ms","qual/$1k","$/correct","errors"], frontier_rows)}
+{answer_section}
 <h2>Retrieval quality</h2>
 {_html_table(["System",f"P@{k}",f"R@{k}",f"F1@{k}",f"nDCG@{k}","MRR",f"hit@{k}"], qual_rows)}
 <h2>Citation exactness &amp; near-miss</h2>
