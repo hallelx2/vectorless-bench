@@ -71,6 +71,11 @@ class VectorlessRetriever:
         self.setup_usage = Usage()  # ingest cost isn't returned per-doc by API
         self._doc_ids: Dict[str, str] = {}  # logical -> server document_id
         self._paths: Dict[str, Dict[str, List[str]]] = {}  # doc -> {sec_id: path}
+        # Per-document ingest wall-time (upload → ready), in seconds, keyed by
+        # logical doc_id. This is the engine's parse+persist throughput — the
+        # speed axis the Go engine exists for. Surfaced in the report.
+        self.ingest_times: Dict[str, float] = {}
+        self.ingest_bytes: Dict[str, int] = {}
 
     # -- lifecycle ---------------------------------------------------------
     def setup(self, corpus: List[Doc]) -> None:
@@ -93,15 +98,71 @@ class VectorlessRetriever:
                 filename = f"{d.doc_id}.md"
                 content_type = d.content_type
 
-            resp = self._client.ingest_document(
-                source=source,
-                filename=filename,
-                content_type=content_type,
+            # Ingest each doc independently. A single document that fails
+            # to parse / reach ready (a pathological PDF) must not sink the
+            # whole system's run — skip it and query the rest. Questions
+            # whose doc didn't ingest are handled by retrieve()'s
+            # "was not ingested" guard.
+            #
+            # Transient network errors (Windows DNS hiccups, brief socket
+            # unreachables) get a few retries with backoff before we
+            # conclude the doc can't ingest — the local DNS resolver
+            # occasionally returns SERVFAIL on Cloud Run's IPv6-only
+            # AAAA records under load, and a single retry usually wins.
+            transient = (
+                "getaddrinfo", "10065", "10054", "10060",
+                "Connection reset", "Temporary failure", "Name or service not known",
             )
-            doc_id = resp.document_id
-            self._client.wait_for_ready(doc_id, timeout=self.ingest_timeout)
-            self._doc_ids[d.doc_id] = doc_id
-            self._paths[d.doc_id] = self._build_path_index(doc_id)
+            # Stable per-corpus-doc idempotency key. The engine dedups on
+            # (org, idempotency_key): any retry of this ingest — whether our
+            # loop below OR the SDK transport's own retry-on-transient — returns
+            # the SAME document instead of creating a duplicate. This is the fix
+            # for the HAL-323 "same doc ingested up to 6×" bug; without it a
+            # connection reset AFTER the server committed the doc made the SDK
+            # re-POST and spawn a fresh doc_id + parse job each time.
+            idem_key = f"vlbench:{self.org}:{d.doc_id}"
+
+            ok = False
+            last_err: Exception | None = None
+            for attempt in range(4):
+                try:
+                    t_doc = time.perf_counter()
+                    resp = self._client.ingest_document(
+                        source=source,
+                        filename=filename,
+                        content_type=content_type,
+                        idempotency_key=idem_key,
+                    )
+                    doc_id = resp.document_id
+                    # Poll tightly (0.25s) so the measured upload→ready time
+                    # reflects the engine's real parse+persist latency rather
+                    # than the SDK's default 2s poll granularity — the ingest
+                    # speed number is a headline for the Go engine.
+                    self._client.wait_for_ready(
+                        doc_id, timeout=self.ingest_timeout, poll_interval=0.25
+                    )
+                    # Upload → ready wall-time: the engine's end-to-end ingest
+                    # speed for this document (parse + tree build + persist).
+                    self.ingest_times[d.doc_id] = time.perf_counter() - t_doc
+                    self.ingest_bytes[d.doc_id] = len(source)
+                    self._doc_ids[d.doc_id] = doc_id
+                    self._paths[d.doc_id] = self._build_path_index(doc_id)
+                    ok = True
+                    break
+                except Exception as e:  # pragma: no cover - network/timeout
+                    last_err = e
+                    msg = str(e)
+                    if not any(t in msg for t in transient) or attempt == 3:
+                        break
+                    import sys as _sys, time as _time
+                    print(f"[vectorless] transient on {d.doc_id} attempt {attempt+1}: {msg[:80]} — retrying",
+                          file=_sys.stderr)
+                    _time.sleep(2 * (attempt + 1))
+            if not ok:
+                import sys
+                print(f"[vectorless] WARN: skipping {d.doc_id} — ingest failed: {last_err}",
+                      file=sys.stderr)
+                continue
         self.setup_seconds = time.perf_counter() - t0
 
     def teardown(self) -> None:  # pragma: no cover - network
