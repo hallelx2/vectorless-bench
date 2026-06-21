@@ -163,6 +163,10 @@ class RunRecord:
     strategy: str = ""
     cold: bool = True
     error: Optional[str] = None
+    # Human-readable judging trail (question, gold, candidate answer, judge
+    # rationale, retrieved-context preview). None unless persist_answers is on.
+    # Kept out of `metrics` so the scoring shape stays numeric-only.
+    review: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

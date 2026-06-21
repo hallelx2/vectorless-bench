@@ -31,6 +31,13 @@ class RunConfig:
     judge_model: str = "gpt-4o"
     gen_model: str = "gpt-4o-mini"  # answer generator for the judge axis
 
+    # Persist the human-readable judging trail per (system, question): the
+    # question, the gold answer, the candidate answer that was graded, the
+    # judge's own rationale, and a preview of the retrieved context. Lets a
+    # human re-check every verdict instead of trusting the aggregate. Written
+    # into records.jsonl (the `review` field) and a readable review.md.
+    persist_answers: bool = True
+
     # dataset-specific options (e.g. docs_dir for financebench)
     dataset_params: Dict[str, Any] = field(default_factory=dict)
     # per-system overrides, keyed by system name
@@ -39,7 +46,7 @@ class RunConfig:
     def params_for(self, system: str) -> Dict[str, Any]:
         """Factory kwargs for a system: shared models + its own overrides."""
         base: Dict[str, Any] = {}
-        if system in ("vectorless", "vectorless_pageindex", "full_context"):
+        if system in ("vectorless", "vectorless_treewalk", "full_context"):
             base["model"] = self.model
         if system == "vector_rag":
             base["embedding_model"] = self.embedding_model
