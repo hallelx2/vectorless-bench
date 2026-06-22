@@ -9,17 +9,50 @@ imported lazily; only the one you use needs to be installed.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .pricing import compute
 from .schema import Usage
 
+# Per-client SDK retries (anthropic/openai auto-retry APIConnectionError, 408,
+# 409, 429, and >=500 with exponential backoff — default is only 2). A long
+# judged run (hundreds of LLM calls) WILL hit a transient z.ai/provider blip; a
+# generous client retry budget keeps a single hiccup from killing the whole run.
+_CLIENT_MAX_RETRIES = 8
+_CLIENT_TIMEOUT = 120.0
+
+# Belt-and-suspenders: an outer retry around the whole provider call, in case
+# the SDK's retries are exhausted (e.g. a sustained ~minute outage) or the
+# provider raises a transient error the SDK doesn't classify as retryable.
+_OUTER_RETRIES = 4
+
 
 @dataclass
 class Completion:
     text: str
     usage: Usage
+
+
+def _is_transient(exc: Exception) -> bool:
+    """A network/availability error worth retrying — never an auth/validation
+    error (those fail fast). Classified by exception type name + message so we
+    don't have to import every provider's exception hierarchy."""
+    name = type(exc).__name__.lower()
+    transient_types = (
+        "connection", "timeout", "apiconnection", "apitimeout",
+        "internalserver", "overloaded", "ratelimit", "serviceunavailable",
+    )
+    if any(t in name for t in transient_types):
+        return True
+    msg = str(exc).lower()
+    transient_msgs = (
+        "connection error", "connection reset", "connection aborted",
+        "timed out", "timeout", "temporarily unavailable", "overloaded",
+        "rate limit", "502", "503", "504", "10054", "10053", "10060",
+    )
+    return any(m in msg for m in transient_msgs)
 
 
 def _provider(model: str) -> str:
@@ -42,13 +75,33 @@ def complete(
     json_mode: bool = False,
 ) -> Completion:
     p = _provider(model)
-    if p == "glm":
-        return _glm(model, system, user, max_tokens, temperature)
-    if p == "anthropic":
-        return _anthropic(model, system, user, max_tokens, temperature)
-    if p == "gemini":
-        return _gemini(model, system, user, max_tokens, temperature)
-    return _openai(model, system, user, max_tokens, temperature, json_mode)
+
+    def _once() -> Completion:
+        if p == "glm":
+            return _glm(model, system, user, max_tokens, temperature)
+        if p == "anthropic":
+            return _anthropic(model, system, user, max_tokens, temperature)
+        if p == "gemini":
+            return _gemini(model, system, user, max_tokens, temperature)
+        return _openai(model, system, user, max_tokens, temperature, json_mode)
+
+    # Outer retry: survive a transient provider/network blip that outlives the
+    # SDK's own retry budget, so one hiccup doesn't abort an hours-long run.
+    last: Exception | None = None
+    for attempt in range(_OUTER_RETRIES + 1):
+        try:
+            return _once()
+        except Exception as e:  # noqa: BLE001 — re-raised below if not transient
+            last = e
+            if not _is_transient(e) or attempt == _OUTER_RETRIES:
+                raise
+            import sys
+            delay = min(2.0 * (2 ** attempt), 30.0)
+            print(f"[vlbench] transient LLM error ({type(e).__name__}), "
+                  f"retry {attempt + 1}/{_OUTER_RETRIES} in {delay:.0f}s: {str(e)[:80]}",
+                  file=sys.stderr)
+            time.sleep(delay)
+    raise last  # type: ignore[misc]
 
 
 def _glm(model, system, user, max_tokens, temperature) -> Completion:
@@ -74,7 +127,10 @@ def _glm(model, system, user, max_tokens, temperature) -> Completion:
         or os.environ.get("VLE_LLM_ANTHROPIC_API_KEY")
         or os.environ.get("GLM_API_KEY", "")
     )
-    client = anthropic.Anthropic(base_url=base, api_key=key)
+    client = anthropic.Anthropic(
+        base_url=base, api_key=key,
+        max_retries=_CLIENT_MAX_RETRIES, timeout=_CLIENT_TIMEOUT,
+    )
     r = client.messages.create(
         model=model,
         system=system,
@@ -90,7 +146,7 @@ def _glm(model, system, user, max_tokens, temperature) -> Completion:
 def _openai(model, system, user, max_tokens, temperature, json_mode) -> Completion:
     from openai import OpenAI  # type: ignore
 
-    client = OpenAI()
+    client = OpenAI(max_retries=_CLIENT_MAX_RETRIES, timeout=_CLIENT_TIMEOUT)
     kwargs = {
         "model": model,
         "messages": [
@@ -114,7 +170,9 @@ def _openai(model, system, user, max_tokens, temperature, json_mode) -> Completi
 def _anthropic(model, system, user, max_tokens, temperature) -> Completion:
     import anthropic  # type: ignore
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(
+        max_retries=_CLIENT_MAX_RETRIES, timeout=_CLIENT_TIMEOUT,
+    )
     r = client.messages.create(
         model=model,
         system=system,
