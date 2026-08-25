@@ -1,4 +1,4 @@
-"""Unit tests for the vectorless_pageindex retriever's response mapping.
+"""Unit tests for the vectorless_treewalk retriever's response mapping.
 
 These don't touch the network: we stub the retriever's httpx client with a
 fake that returns a canned /v1/answer/treewalk payload, then assert that
@@ -16,8 +16,8 @@ import pytest
 
 pytest.importorskip("vectorless")
 
-from vectorless_bench.retrievers.vectorless_pageindex import (  # noqa: E402
-    VectorlessPageIndexRetriever,
+from vectorless_bench.retrievers.vectorless_treewalk import (  # noqa: E402
+    VectorlessTreewalkRetriever,
 )
 from vectorless_bench.schema import AnswerType, Question  # noqa: E402
 
@@ -48,11 +48,11 @@ class _FakeHTTP:
         pass
 
 
-def _build(monkeypatch) -> VectorlessPageIndexRetriever:
+def _build(monkeypatch) -> VectorlessTreewalkRetriever:
     # Avoid hitting a real server during construction: the parent __init__
     # builds a VectorlessClient but never calls it until setup(), so a dummy
     # base_url is fine here.
-    r = VectorlessPageIndexRetriever(
+    r = VectorlessTreewalkRetriever(
         api_key="k",
         base_url="http://localhost:9",
         model="gemini-2.5-flash",

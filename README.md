@@ -70,7 +70,7 @@ differentiator the whitepaper argues for, made measurable.
 | System | What it is | Deps |
 |---|---|---|
 | `vectorless` | the engine under test (default chunked-tree strategy), via the Python SDK | `vectorless-sdk` + a running server |
-| `vectorless_pageindex` | the engine's PageIndex-style page-based agentic strategy, via `POST /v1/answer/pageindex` (page navigation + answer + page-grounded citations in one round-trip) | a server exposing `/v1/answer/pageindex` |
+| `vectorless_treewalk` | the engine's page-based agentic ("treewalk") strategy, via `POST /v1/answer/treewalk` (page navigation + answer + page-grounded citations in one round-trip) | a server exposing `/v1/answer/treewalk` |
 | `vector_rag` | pgvector + OpenAI embeddings + cosine top-k (the ROADMAP baseline) | `[vector]` + Postgres/pgvector |
 | `pageindex` | the real upstream [PageIndex](https://github.com/VectifyAI/PageIndex) — *their* tree builder (`page_index`/`md_to_tree`) + their reasoning retrieval, priced on our table | clone of PageIndex + `[llm]` |
 | `full_context` | stuff the whole doc in the prompt — the quality **ceiling** + cost worst case | `[llm]` |

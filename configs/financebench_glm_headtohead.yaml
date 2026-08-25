@@ -1,0 +1,46 @@
+# Head-to-head FinanceBench run on GLM (glm-4.6 via the engine's
+# Anthropic-compatible driver pointed at https://api.z.ai/api/anthropic).
+#
+# Switching the engine off Gemini onto GLM sidesteps the Gemini free-tier
+# 10k/day quota that 429'd every ingest. The engine's LLM (summarize,
+# HyDE, TOC builder, retrieval, the page-based agentic loop) all run on
+# glm-4.6. bm25 stays the free lexical floor.
+#
+# full_context is dropped: the bench's full_context retriever calls
+# Gemini directly (its own google-genai client), which is still on the
+# exhausted free quota — it would just error. The comparison we care
+# about is vectorless (chunked-tree) vs vectorless_treewalk (the
+# page-based redesign), with bm25 as the floor.
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless_treewalk
+  - vectorless
+  - bm25
+
+k: 5
+repeats: 1
+cold: true
+limit: 2             # 2 docs first; bump once GLM ingest timing is known.
+sample_seed: 0
+out_dir: runs
+
+# Query-time model. The engine's configured default is glm-4.6 (set via
+# env on the deployed service); passing it explicitly keeps the bench
+# record honest about which model answered.
+model: glm-4.6
+
+system_params:
+  vectorless:
+    org: vlbench
+    ingest_timeout: 5400
+    query_timeout: 180
+
+  vectorless_treewalk:
+    org: vlbench
+    ingest_timeout: 5400
+    query_timeout: 240
+    max_hops: 6
+    page_content_limit: 16000

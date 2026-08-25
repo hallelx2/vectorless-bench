@@ -3,7 +3,7 @@
 # Compares:
 #   - vectorless              — default chunked-tree strategy (the baseline
 #                                we're trying to beat with the new endpoint).
-#   - vectorless_pageindex    — the engine's new page-based agentic loop
+#   - vectorless_treewalk    — the engine's new page-based agentic loop
 #                                (/v1/answer/pageindex), which navigates
 #                                page ranges instead of a section tree.
 #   - pageindex               — VectifyAI/PageIndex (their real upstream
@@ -23,18 +23,20 @@ dataset_params:
   docs_dir: data/financebench/docs
 
 systems:
+  - vectorless_treewalk
   - vectorless
-  - vectorless_pageindex
-  - pageindex
   - bm25
   - full_context
+  # pageindex (their upstream self-host) omitted: its tree builder OOMs on
+  # 75-92 page filings on this box. bm25 + full_context are the floor/ceiling.
 
 k: 5
 repeats: 1
 cold: true
-limit: 4             # all four local 10-Ks. Ingest is shared across the two
-                     # vectorless systems (same engine, same documents), so
-                     # this is ~one ingest pass + a few questions per doc.
+limit: 2             # 2 docs for the first real measurement now that ingest
+                     # is capped at 400 sections (engine PR #27) — should
+                     # clear in ~10-15 min/doc instead of stalling. Bump once
+                     # this confirms the redesign's number.
 sample_seed: 0
 out_dir: runs
 
@@ -52,7 +54,7 @@ system_params:
     ingest_timeout: 5400
     query_timeout: 180
 
-  vectorless_pageindex:
+  vectorless_treewalk:
     org: vlbench
     ingest_timeout: 5400
     # Higher query timeout — the agentic loop can hop several times before

@@ -1,0 +1,63 @@
+# FinanceBench, LLM-judge ANSWER-CORRECTNESS axis — the canonical head-to-head.
+#
+# The comparison this benchmark exists to make: Vectorless (treewalk, the
+# page-based agentic engine) vs the two standard RAG baselines — dense
+# embeddings (vector_rag) and lexical BM25 — graded on the only axis that's
+# fair across architectures: does the FINAL ANSWER match the FinanceBench gold
+# answer, as judged by a blind LLM judge?
+#
+# Why judged answer-correctness and not span-F1: treewalk is answer-first (it
+# emits its own grounded answer), so span-overlap retrieval F1 structurally
+# under-counts it. The judge grades treewalk's native answer; for the pure
+# retrievers (vector_rag, bm25) it generates an answer from ONLY their top-k
+# and grades THAT. Same judge model, blind to system identity, grounded on the
+# dataset gold — so the number measures answer quality, not retrieval shape.
+# (Retrieval P/R/F1, citation exactness, near-miss, determinism, cost and
+# latency are still reported alongside — see report.md / report.html.)
+#
+# All LLM work (engine summarize/HyDE/TOC/retrieval/agentic loop, the generator,
+# the judge) runs on glm-4.6 via z.ai's Anthropic-compatible gateway, so only
+# VLE_LLM_ANTHROPIC_API_KEY (+ _BASE_URL ending in /v1) is needed. vector_rag
+# embeds with a LOCAL sentence-transformers model — free, deterministic, no
+# OpenAI key, fully self-hosted.
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless_treewalk
+  - vector_rag
+  - bm25
+
+k: 5
+repeats: 1
+cold: true
+sample_seed: 0
+out_dir: runs
+
+model: glm-4.6
+
+# LLM-judge axis on GLM (the headline quality measure).
+judge: true
+judge_model: glm-4.6
+gen_model: glm-4.6
+embedding_model: st:BAAI/bge-small-en-v1.5
+
+system_params:
+  vectorless_treewalk:
+    org: vlbench
+    ingest_timeout: 5400
+    query_timeout: 240
+    max_hops: 6
+    page_content_limit: 16000
+
+  vector_rag:
+    backend: memory               # in-RAM cosine; no Postgres, no API key
+    embedding_model: st:BAAI/bge-small-en-v1.5
+    chunk_tokens: 512
+    overlap_tokens: 64
+
+  bm25:
+    chunk_tokens: 512
+    overlap_tokens: 64
+limit: null            # run ALL locally-answerable questions (full local set)

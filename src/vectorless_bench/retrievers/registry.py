@@ -43,10 +43,10 @@ def _vectorless(**cfg: Any) -> Retriever:
     return VectorlessRetriever(**cfg)
 
 
-def _vectorless_pageindex(**cfg: Any) -> Retriever:
-    from .vectorless_pageindex import VectorlessPageIndexRetriever
+def _vectorless_treewalk(**cfg: Any) -> Retriever:
+    from .vectorless_treewalk import VectorlessTreewalkRetriever
 
-    return VectorlessPageIndexRetriever(**cfg)
+    return VectorlessTreewalkRetriever(**cfg)
 
 
 def _vector_rag(**cfg: Any) -> Retriever:
@@ -75,7 +75,7 @@ def _pageindex(**cfg: Any) -> Retriever:
 
 register("mock", _mock)
 register("vectorless", _vectorless)
-register("vectorless_pageindex", _vectorless_pageindex)
+register("vectorless_treewalk", _vectorless_treewalk)
 register("vector_rag", _vector_rag)
 register("bm25", _bm25)
 register("full_context", _full_context)

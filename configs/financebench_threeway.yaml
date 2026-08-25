@@ -14,7 +14,7 @@ dataset_params:
   docs_dir: data/financebench/docs
 
 systems:
-  - vectorless_pageindex
+  - vectorless_treewalk
   - vector_rag
   - bm25
 
@@ -34,7 +34,7 @@ embedding_model: st:BAAI/bge-small-en-v1.5
 judge: false
 
 system_params:
-  vectorless_pageindex:
+  vectorless_treewalk:
     org: vlbench
     ingest_timeout: 5400
     query_timeout: 240

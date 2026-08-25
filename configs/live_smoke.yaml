@@ -1,0 +1,29 @@
+# Live validation against the real deployed engine, on the tiny fixture corpus.
+# Cheap (~cents of Gemini) and fast — proves: Secret Manager keys work, the engine
+# is reachable + ingests/queries, and the Gemini baselines run end to end.
+#
+#   python deploy/load_secrets.py --project <proj> --base-url <engine-url> --out .env
+#   # then (load .env into env), and:
+#   vlbench run --config configs/live_smoke.yaml
+#
+# Keys available are Gemini-only, so vector_rag (OpenAI embeddings) is omitted.
+dataset: fixtures
+systems:
+  - vectorless        # the live engine (uses its configured Gemini)
+  - bm25              # free lexical floor
+  - full_context      # quality ceiling, on Gemini
+k: 5
+repeats: 2            # determinism axis
+cold: true
+model: gemini-2.5-flash
+out_dir: runs
+
+system_params:
+  full_context:
+    model: gemini-2.5-flash
+    max_context_tokens: 100000
+  vectorless:
+    # production engine: we can't assert caches are off, so cost/latency here are
+    # "as deployed" (note it when reporting). Re-run against a cache-off instance
+    # for a strict cold-cache number.
+    server_cache_disabled: false

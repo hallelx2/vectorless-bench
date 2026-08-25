@@ -1,0 +1,37 @@
+# Fast FinanceBench run: the page-based redesign vs bm25 on GLM, with the
+# engine in minimal ingest mode (VLS_INGEST_MODE=minimal on the deployed
+# service). Minimal mode does ZERO LLM calls at ingest — parse → persist →
+# ready in seconds — so we can run a meaningfully larger sample.
+#
+# Why only these two systems:
+#   - vectorless_treewalk: the redesign. Navigates the synthesised TOC +
+#     raw page text; needs none of the per-section enrichment minimal mode
+#     skips. This is what we're measuring.
+#   - bm25: free lexical floor, the honest baseline.
+# The chunked-tree `vectorless` system relies on per-section summaries for
+# its title+summary selection, which minimal mode intentionally omits, so
+# it's measured in a separate full-mode run rather than handicapped here.
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless_treewalk
+  - bm25
+
+k: 5
+repeats: 1
+cold: true
+limit: 10            # ingest is ~parse-speed now; 10 docs is cheap.
+sample_seed: 0
+out_dir: runs
+
+model: glm-4.6
+
+system_params:
+  vectorless_treewalk:
+    org: vlbench
+    ingest_timeout: 600        # minimal mode reaches ready in seconds; 10m is plenty
+    query_timeout: 240
+    max_hops: 6
+    page_content_limit: 16000

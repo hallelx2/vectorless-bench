@@ -1,0 +1,42 @@
+# FinanceBench run tuned for the ajicore deployment, whose keys are Gemini-only.
+#
+# - vectorless: the live engine (Gemini), via the SDK + X-Vectorless-Org header.
+# - bm25:       free lexical floor.
+# - full_context: quality ceiling, on Gemini.
+# vector_rag is omitted (needs an OpenAI embeddings key). pageindex is omitted by
+# default (its tree builder defaults to an OpenAI model; enable once a key exists
+# or set its model to a LiteLLM "gemini/..." string).
+#
+# Start small with `limit` — full_context stuffs whole 10-Ks into the model, so
+# cost scales with question count. Bump once a small run looks right.
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless
+  - bm25
+  - full_context
+
+k: 5
+repeats: 2
+cold: true
+limit: 20            # raise toward 150 once validated; watch full_context cost
+sample_seed: 0
+out_dir: /results
+
+model: gemini-2.5-flash
+embedding_model: text-embedding-3-small   # unused unless vector_rag is enabled
+
+system_params:
+  full_context:
+    model: gemini-2.5-flash
+    max_context_tokens: 900000   # Gemini 2.5 Flash has a very large context
+  vectorless:
+    org: vlbench
+    # HyDE adds ~5 candidate questions × every section after summarize, doubling
+    # per-doc ingest time (a single 200-section 10-K is now 10-30 min server-side
+    # at default summary_concurrency=4). Bumped to 5400s (90 min) until the
+    # engine runs HyDE in parallel with summarize.
+    ingest_timeout: 5400
+    query_timeout: 180
