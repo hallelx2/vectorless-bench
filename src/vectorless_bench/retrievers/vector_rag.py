@@ -66,6 +66,25 @@ class VectorRagRetriever:
             self._openai = OpenAI()
         return self._openai
 
+    def _cached_embed(self, texts: List[str]) -> List[List[float]]:
+        import hashlib
+        import json as _json
+        from pathlib import Path
+
+        key = hashlib.sha256((self.embedding_model + "\x00" + "\x00".join(texts)).encode()).hexdigest()[:24]
+        cache = Path("data/cache") / f"emb-{self.embedding_model.replace('/', '_')}-{key}.json"
+        if cache.exists():
+            self.setup_meta = {"embedding_cache": "hit", "cache_file": str(cache)}
+            return _json.loads(cache.read_text())
+        batch = 128
+        vectors: List[List[float]] = []
+        for i in range(0, len(texts), batch):
+            vectors.extend(self._embed(texts[i : i + batch]))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(vectors))
+        self.setup_meta = {"embedding_cache": "miss", "cache_file": str(cache)}
+        return vectors
+
     def _embed(self, texts: Sequence[str]) -> List[List[float]]:
         toks = sum(count_tokens(t, self.embedding_model) for t in texts)
         self.setup_usage.embedding_tokens += toks
@@ -128,10 +147,10 @@ class VectorRagRetriever:
                 chunk_doc(d, self.chunk_tokens, self.overlap_tokens)
             )
         # batch embed
-        batch = 128
-        vectors: List[List[float]] = []
-        for i in range(0, len(self._chunks), batch):
-            vectors.extend(self._embed([c.text for c in self._chunks[i : i + batch]]))
+        # Embeddings are cached on disk keyed by model and chunk text, so a
+        # re-run of the bench does not repeat a CPU-hours ingest. The
+        # first, uncached pass is the one whose setup_seconds is reported.
+        vectors = self._cached_embed([c.text for c in self._chunks])
 
         if self.backend == "pgvector":
             self._pg_setup(vectors)
@@ -214,9 +233,13 @@ class VectorRagRetriever:
         )
 
     def _embed_query(self, q: str) -> List[float]:
-        # query embedding cost is tiny; don't fold it into ingest usage
-        resp = self._client().embeddings.create(model=self.embedding_model, input=[q])
-        return resp.data[0].embedding
+        # Same provider as setup — local, Gemini or OpenAI — so a local
+        # model never reaches for an OpenAI client at query time. The
+        # query's tokens are priced by the caller, not folded into ingest.
+        before = self.setup_usage.embedding_tokens, self.setup_usage.cost_usd
+        vec = self._embed([q])[0]
+        self.setup_usage.embedding_tokens, self.setup_usage.cost_usd = before
+        return vec
 
     def _pg_query(self, qvec, doc_id, k):
         # the cosine operator (<=>) appears in both SELECT and ORDER BY, so the
