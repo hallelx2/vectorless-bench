@@ -72,10 +72,25 @@ class VectorRagRetriever:
         self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
         if self.embedding_model.startswith("gemini-embedding"):
             return self._embed_gemini(texts)
+        if "/" in self.embedding_model:  # a Hugging Face id: run it locally
+            return self._embed_local(texts)
         resp = self._client().embeddings.create(
             model=self.embedding_model, input=list(texts)
         )
         return [d.embedding for d in resp.data]
+
+    def _embed_local(self, texts: Sequence[str]) -> List[List[float]]:
+        """A local sentence-transformers model — BAAI/bge-small-en-v1.5 by
+        default in the FinanceBench config: 384 dimensions, 33M parameters,
+        the standard small English retriever people actually deploy. No
+        network in the baseline's numbers, cost zero by construction, setup
+        time measured and reported like every other system's."""
+        from sentence_transformers import SentenceTransformer  # type: ignore
+
+        if getattr(self, "_local", None) is None:
+            self._local = SentenceTransformer(self.embedding_model)
+        vecs = self._local.encode(list(texts), batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+        return [list(map(float, v)) for v in vecs]
 
     def _embed_gemini(self, texts: Sequence[str]) -> List[List[float]]:
         """Gemini embeddings via google-genai. gemini-embedding-2 aggregates a

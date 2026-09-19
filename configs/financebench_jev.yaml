@@ -9,7 +9,7 @@ dataset_params:
 
 systems:
   - vectorless
-  - vector_rag
+  - vector_rag        # local BGE-small — the honest chunk-and-embed baseline
   - bm25
 
 k: 5
@@ -30,6 +30,6 @@ system_params:
     query_timeout: 300
   vector_rag:
     backend: memory
-    embedding_model: gemini-embedding-2
+    embedding_model: BAAI/bge-small-en-v1.5   # gemini-embedding-2 also works, but the free tier is 100 req/min
     chunk_tokens: 512
     overlap_tokens: 64

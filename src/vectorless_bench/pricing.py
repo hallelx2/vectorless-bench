@@ -70,6 +70,10 @@ def compute(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 def compute_embedding(model: str, tokens: int) -> float:
+    # A local model (a Hugging Face id) costs nothing per token; its price is
+    # the setup time the report already carries.
+    if "/" in model:
+        return 0.0
     p = EMBEDDING_PRICES.get(model)
     if p is None:
         if STRICT:
