@@ -67,15 +67,43 @@ class VectorRagRetriever:
         return self._openai
 
     def _embed(self, texts: Sequence[str]) -> List[List[float]]:
-        resp = self._client().embeddings.create(
-            model=self.embedding_model, input=list(texts)
-        )
         toks = sum(count_tokens(t, self.embedding_model) for t in texts)
         self.setup_usage.embedding_tokens += toks
         self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
+        if self.embedding_model.startswith("gemini-embedding"):
+            return self._embed_gemini(texts)
+        resp = self._client().embeddings.create(
+            model=self.embedding_model, input=list(texts)
+        )
         return [d.embedding for d in resp.data]
 
-    # -- lifecycle ---------------------------------------------------------
+    def _embed_gemini(self, texts: Sequence[str]) -> List[List[float]]:
+        """Gemini embeddings via google-genai. gemini-embedding-2 aggregates a
+        list of plain strings into ONE vector, so each text is wrapped in its
+        own Content — one call then returns one vector per Content (probed
+        2026-09-19: 90 inputs → 90 embeddings). 768 dimensions, one of the
+        three Google recommends; cosine ranking is unaffected."""
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+
+        if getattr(self, "_gemini", None) is None:
+            self._gemini = genai.Client()
+        out: List[List[float]] = []
+        batch = 90
+        for i in range(0, len(texts), batch):
+            chunk = list(texts[i : i + batch])
+            r = self._gemini.models.embed_content(
+                model=self.embedding_model,
+                contents=[types.Content(parts=[types.Part(text=t)]) for t in chunk],
+                config=types.EmbedContentConfig(output_dimensionality=768),
+            )
+            if len(r.embeddings) != len(chunk):
+                raise RuntimeError(
+                    f"gemini returned {len(r.embeddings)} embeddings for {len(chunk)} inputs"
+                )
+            out.extend(list(e.values) for e in r.embeddings)
+        return out
+
     def setup(self, corpus: List[Doc]) -> None:
         import time
 
