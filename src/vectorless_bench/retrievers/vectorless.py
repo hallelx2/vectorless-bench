@@ -163,7 +163,8 @@ class VectorlessRetriever:
                     section_id=sid,
                     title=getattr(s, "title", "") or "",
                     title_path=path_index.get(sid, []),
-                    score=None,
+                    page=getattr(s, "page", None),
+                    score=getattr(s, "confidence", None),
                 )
             )
 
