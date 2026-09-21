@@ -42,6 +42,9 @@ PRICES: Dict[str, Tuple[float, float]] = {
 # vector-RAG baseline's ingest + query-embedding cost on the same basis.
 EMBEDDING_PRICES: Dict[str, float] = {
     "text-embedding-3-small": 0.02,
+    # Gemini API pricing page, read 2026-09-19 (page dated 2026-09-16): paid
+    # tier, text input, per 1M tokens. Batch is half; free tier exists.
+    "gemini-embedding-2": 0.20,
     "text-embedding-3-large": 0.13,
     "text-embedding-ada-002": 0.10,
 }
@@ -67,6 +70,10 @@ def compute(model: str, input_tokens: int, output_tokens: int) -> float:
 
 
 def compute_embedding(model: str, tokens: int) -> float:
+    # A local model (a Hugging Face id) costs nothing per token; its price is
+    # the setup time the report already carries.
+    if "/" in model:
+        return 0.0
     p = EMBEDDING_PRICES.get(model)
     if p is None:
         if STRICT:

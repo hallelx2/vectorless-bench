@@ -19,3 +19,4 @@ dist/
 
 # env
 .env
+data/cache/
