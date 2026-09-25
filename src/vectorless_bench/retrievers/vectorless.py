@@ -5,6 +5,16 @@ Two engine-specific details handled here:
 1. Section IDs are random `sec_<uuid>`s, so after ingest we fetch the document
    tree and build an id -> title_path map. Returned sections are tagged with
    their structural path, which is what the scorer's path matching needs.
+   The tree arrives FLAT: `DocumentTree.sections` is a list of `SectionView`
+   whose `children` are id strings, not nodes. Walking it as a nested tree
+   silently yields nothing, which is how `path_correct_top1` came to read
+   0.000 for every system rather than for none.
+1b. Since HAL-1390 the leading units are evidence PAGES (`id: page_<n>`),
+   which are not tree nodes and so have no id in that map. The engine does
+   name the owning section in the unit's title (`"<section> · p.<n>"`), so
+   a page is resolved to its owning leaf's path by that title. Titles are
+   not guaranteed unique; an ambiguous one resolves to no path rather than
+   to a guess, and the count is reported in the trace.
 2. Caching would zero out cost and latency. For a fair cold-cache measurement
    the SERVER must run with `retrieval.cache.enabled=false` and the llmgate
    cache middleware off. We record the declared cache mode in the trace and, if
@@ -18,10 +28,63 @@ same table), so Vectorless numbers need no re-estimation.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from ..pricing import compute
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
+
+# The engine titles an evidence page "<owning section> · p.<n>"
+# (internal/api/server.go, evidencePageSections).
+_PAGE_TITLE = re.compile(r"^(?P<section>.*?)\s*·\s*p\.\s*(?P<page>\d+)\s*$")
+
+
+def _norm(title: str) -> str:
+    """Compare titles the way a reader would: case- and space-insensitively."""
+    return " ".join(title.split()).casefold()
+
+
+@dataclass
+class _PathIndex:
+    """Heading paths for a document, by section id and by leaf title.
+
+    `by_title` exists only to resolve evidence pages, which are not tree
+    nodes and carry their owning section's title rather than its id. A
+    title shared by two sections cannot resolve to one path, so it is
+    dropped rather than guessed, and `ambiguous_titles` records that it
+    happened — an unresolvable page is a measurement gap, not a zero.
+    """
+
+    by_id: Dict[str, List[str]] = field(default_factory=dict)
+    by_title: Dict[str, List[str]] = field(default_factory=dict)
+    _title_hits: Dict[str, int] = field(default_factory=dict)
+    ambiguous_titles: int = 0
+
+    def add_title(self, title: str, path: List[str]) -> None:
+        key = _norm(title)
+        if not key:
+            return
+        self._title_hits[key] = self._title_hits.get(key, 0) + 1
+        self.by_title[key] = path
+
+    def finalise(self) -> None:
+        dupes = [k for k, n in self._title_hits.items() if n > 1]
+        for k in dupes:
+            self.by_title.pop(k, None)
+        self.ambiguous_titles = len(dupes)
+
+    def resolve(self, section_id: str, title: str) -> List[str]:
+        """The heading path for a returned unit, section or page."""
+        direct = self.by_id.get(section_id)
+        if direct:
+            return list(direct)
+        m = _PAGE_TITLE.match(title or "")
+        if m:
+            owner = self.by_title.get(_norm(m.group("section")))
+            if owner:
+                return list(owner)
+        return []
 
 
 class VectorlessRetriever:
@@ -59,7 +122,7 @@ class VectorlessRetriever:
         self.setup_seconds = 0.0
         self.setup_usage = Usage()  # ingest cost isn't returned per-doc by API
         self._doc_ids: Dict[str, str] = {}  # logical -> server document_id
-        self._paths: Dict[str, Dict[str, List[str]]] = {}  # doc -> {sec_id: path}
+        self._paths: Dict[str, _PathIndex] = {}  # logical doc -> heading paths
 
     # -- lifecycle ---------------------------------------------------------
     def setup(self, corpus: List[Doc]) -> None:
@@ -102,27 +165,79 @@ class VectorlessRetriever:
         except Exception:
             pass
 
-    def _build_path_index(self, server_doc_id: str) -> Dict[str, List[str]]:
-        """Walk the document tree to map each section id to its heading path."""
-        paths: Dict[str, List[str]] = {}
+    def _build_path_index(self, server_doc_id: str) -> "_PathIndex":
+        """Map section id -> heading path, and section title -> heading path.
+
+        `get_document_tree` returns a FLAT `DocumentTree`: `.sections` is a
+        list of `SectionView` with `id`, `parent_id`, `title`, and `children`
+        as id STRINGS. There is no `.root`, and `.children` are not nodes, so
+        the obvious recursive walk terminates immediately and leaves every
+        path empty. Paths are built by walking `parent_id` upwards instead.
+
+        A nested shape (older servers, or a future tree endpoint) is still
+        handled, so this does not depend on which one arrives.
+        """
+        idx = _PathIndex()
         try:
             tree = self._client.get_document_tree(server_doc_id)
         except Exception:  # pragma: no cover - network
-            return paths
+            return idx
 
+        flat = list(getattr(tree, "sections", None) or [])
+        if flat:
+            self._index_flat(flat, idx)
+        else:  # pragma: no cover - shape-dependent
+            self._index_nested(tree, idx)
+        idx.finalise()
+        return idx
+
+    @staticmethod
+    def _index_flat(flat: List[object], idx: "_PathIndex") -> None:
+        """Resolve each section's path by climbing parent_id to the root."""
+        nodes = {}
+        for s in flat:
+            sid = str(getattr(s, "id", "") or "")
+            if sid:
+                nodes[sid] = s
+
+        def path_of(sid: str, seen: Optional[set] = None) -> List[str]:
+            # A malformed tree can contain a parent cycle; a benchmark must
+            # not hang on one, so a repeat visit ends the climb.
+            seen = seen or set()
+            if sid in seen or sid not in nodes:
+                return []
+            seen.add(sid)
+            node = nodes[sid]
+            parent = str(getattr(node, "parent_id", "") or "")
+            title = (getattr(node, "title", "") or "").strip()
+            prefix = path_of(parent, seen) if parent else []
+            return prefix + [title] if title else prefix
+
+        for sid in nodes:
+            p = path_of(sid)
+            if p:
+                idx.by_id[sid] = p
+                idx.add_title(p[-1], p)
+
+    @staticmethod
+    def _index_nested(tree: object, idx: "_PathIndex") -> None:  # pragma: no cover
+        """Fallback for a genuinely nested tree shape."""
         def walk(node: object, prefix: List[str]) -> None:
-            title = getattr(node, "title", "") or ""
+            title = (getattr(node, "title", "") or "").strip()
             here = prefix + [title] if title else prefix
             sid = getattr(node, "id", None) or getattr(node, "section_id", None)
-            if sid:
-                paths[str(sid)] = here
+            if sid and here:
+                idx.by_id[str(sid)] = here
+                idx.add_title(here[-1], here)
             for child in getattr(node, "children", None) or []:
+                if isinstance(child, str):
+                    continue  # an id, not a node — flat shape, handled above
                 walk(child, here)
 
         root = getattr(tree, "root", None) or tree
         for child in getattr(root, "children", None) or []:
-            walk(child, [])
-        return paths
+            if not isinstance(child, str):
+                walk(child, [])
 
     # -- query -------------------------------------------------------------
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
@@ -151,18 +266,23 @@ class VectorlessRetriever:
                 query=question.question, error=str(e),
             )
 
-        path_index = self._paths.get(question.doc_id, {})
+        path_index = self._paths.get(question.doc_id) or _PathIndex()
         sections: List[RetrievedSection] = []
+        unresolved = 0
         # An abstention is a legitimate answer ("nothing confident enough"),
         # scored as zero sections — not a transport error.
         for s in (resp.sections or []):
             sid = str(getattr(s, "id", ""))
+            title = getattr(s, "title", "") or ""
+            path = path_index.resolve(sid, title)
+            if not path:
+                unresolved += 1
             sections.append(
                 RetrievedSection(
                     content=getattr(s, "content", "") or "",
                     section_id=sid,
-                    title=getattr(s, "title", "") or "",
-                    title_path=path_index.get(sid, []),
+                    title=title,
+                    title_path=path,
                     page=getattr(s, "page", None),
                     score=getattr(s, "confidence", None),
                 )
@@ -182,6 +302,11 @@ class VectorlessRetriever:
                 "server_cache_disabled": self.server_cache_disabled,
                 "model": getattr(resp, "model", "") or "",
                 "abstained": bool(getattr(resp, "abstained", False)),
+                # Path metrics are only meaningful when units resolve to a
+                # path. A non-zero count here means path_correct_top1 is
+                # understated and must not be read as a quality signal.
+                "units_without_path": unresolved,
+                "ambiguous_titles": path_index.ambiguous_titles,
             },
         )
 

@@ -8,6 +8,12 @@ than generic retrieval quality:
 - near-miss rate: did the system grab a sibling of the right section (right
   neighbourhood, wrong leaf)? This is the exact vector-RAG failure the
   whitepaper argues against, so we measure it head-on.
+- path coverage: what share of returned units carried a heading path at all.
+  This exists because the two metrics above are silent about the difference
+  between "measured, and the answer is zero" and "could not be measured".
+  A chunk system has no sibling relation, so its near-miss rate is undefined,
+  not 0.0 — and 0.0 reads as a perfect score for the very baseline we are
+  contrasting against. Report near-miss only where coverage is non-zero.
 - abstention: on NO_ANSWER questions, did the system correctly return nothing?
 """
 
@@ -28,6 +34,7 @@ def citation_metrics(
             "span_in_any": 0.0,
             "path_correct_top1": 0.0,
             "near_miss_rate": 0.0,
+            "path_coverage": 0.0,
         }
 
     top1 = sections[0]
@@ -49,11 +56,13 @@ def citation_metrics(
         for g in golds
     )
     near = sum(1 for s in sections if is_sibling_near_miss(s, golds))
+    with_path = sum(1 for s in sections if s.title_path)
     return {
         "span_in_top1": 1.0 if span_top1 else 0.0,
         "span_in_any": 1.0 if span_any else 0.0,
         "path_correct_top1": 1.0 if path_top1 else 0.0,
         "near_miss_rate": near / len(sections),
+        "path_coverage": with_path / len(sections),
     }
 
 
