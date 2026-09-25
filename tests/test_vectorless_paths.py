@@ -102,3 +102,47 @@ def test_parent_cycle_terminates():
 
 def test_norm_collapses_whitespace_and_case():
     assert _norm("  Long-Term   Debt ") == _norm("long-term debt")
+
+
+# ── the third layer: the dataset itself ────────────────────────────────────
+# path_correct_top1 read 0.000 for three independent reasons stacked on top of
+# one another. The first two are fixed above. This is the third, and it is not
+# fixable in code: FinanceBench ships evidence text and page numbers, never
+# heading paths, so the metric is undefined there for EVERY system — a perfect
+# retriever included. The harness must say so rather than print a zero.
+
+from vectorless_bench.metrics.citation import citation_metrics
+from vectorless_bench.schema import GoldAnchor, RetrievedSection
+
+
+def _sec(path, content="Total long-term debt was $12,000 million."):
+    return RetrievedSection(content=content, section_id="page_84",
+                            title="Long-term Debt · p.84", title_path=list(path))
+
+
+def test_gold_without_paths_marks_the_metric_unmeasurable():
+    # FinanceBench's shape: evidence text and a page, no title_path
+    gold = [GoldAnchor(doc_id="AMZN_2022_10K",
+                       answer_spans=["Total long-term debt was $12,000 million."],
+                       page=84)]
+    m = citation_metrics([_sec(["Item 7. MD&A", "Long-term Debt"])], gold)
+    assert m["gold_has_path"] == 0.0, "gold carries no path; the run must say so"
+    assert m["path_coverage"] == 1.0, "our side DID produce a path"
+    # the metric still computes to zero — which is exactly why the flag matters
+    assert m["path_correct_top1"] == 0.0
+
+
+def test_gold_with_paths_is_measurable_and_can_succeed():
+    gold = [GoldAnchor(doc_id="d", answer_spans=["x"],
+                       title_path=["Item 7. MD&A", "Long-term Debt"])]
+    m = citation_metrics([_sec(["Item 7. MD&A", "Long-term Debt"], "x")], gold)
+    assert m["gold_has_path"] == 1.0
+    assert m["path_correct_top1"] == 1.0
+
+
+def test_system_without_paths_is_distinguishable_from_a_wrong_path():
+    gold = [GoldAnchor(doc_id="d", answer_spans=["x"],
+                       title_path=["Item 7. MD&A", "Long-term Debt"])]
+    m = citation_metrics([_sec([], "x")], gold)   # a chunk system
+    assert m["gold_has_path"] == 1.0              # the corpus could score it
+    assert m["path_coverage"] == 0.0              # the system could not be scored

@@ -8,12 +8,23 @@ than generic retrieval quality:
 - near-miss rate: did the system grab a sibling of the right section (right
   neighbourhood, wrong leaf)? This is the exact vector-RAG failure the
   whitepaper argues against, so we measure it head-on.
-- path coverage: what share of returned units carried a heading path at all.
-  This exists because the two metrics above are silent about the difference
-  between "measured, and the answer is zero" and "could not be measured".
-  A chunk system has no sibling relation, so its near-miss rate is undefined,
-  not 0.0 — and 0.0 reads as a perfect score for the very baseline we are
-  contrasting against. Report near-miss only where coverage is non-zero.
+- path coverage / gold_has_path: whether the two metrics above could be
+  computed at all. They are silent about the difference between "measured,
+  and the answer is zero" and "could not be measured", and both failures
+  look identical in a report — a 0.000 that reads as a real score.
+
+  There are two independent ways they become unmeasurable:
+
+  * the SYSTEM returned no heading paths (`path_coverage == 0`). A chunk
+    system has no sibling relation, so its near-miss rate is undefined, not
+    0.0 — and 0.0 reads as a perfect score for the very baseline these
+    metrics exist to contrast against.
+  * the DATASET carries no gold heading paths (`gold_has_path == 0`).
+    FinanceBench ships evidence text and page numbers only, so
+    `path_correct_top1` is 0.000 there for EVERY system including a perfect
+    one. Claiming path-correctness from a FinanceBench run is claiming a
+    number the corpus cannot produce. Use a dataset whose gold carries
+    `title_path` (the fixtures corpus does) or annotate one.
 - abstention: on NO_ANSWER questions, did the system correctly return nothing?
 """
 
@@ -35,6 +46,7 @@ def citation_metrics(
             "path_correct_top1": 0.0,
             "near_miss_rate": 0.0,
             "path_coverage": 0.0,
+            "gold_has_path": 1.0 if any(g.title_path for g in golds) else 0.0,
         }
 
     top1 = sections[0]
@@ -63,6 +75,9 @@ def citation_metrics(
         "path_correct_top1": 1.0 if path_top1 else 0.0,
         "near_miss_rate": near / len(sections),
         "path_coverage": with_path / len(sections),
+        # Without a gold path nothing structural is scoreable; the zero above
+        # is an artefact of the corpus, not a property of the system.
+        "gold_has_path": 1.0 if any(g.title_path for g in golds) else 0.0,
     }
 
 

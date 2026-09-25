@@ -83,6 +83,7 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 "path_correct_top1": avg_metric("path_correct_top1"),
                 "near_miss_rate": avg_metric("near_miss_rate"),
                 "path_coverage": avg_metric("path_coverage"),
+                "gold_has_path": avg_metric("gold_has_path"),
             },
             "abstention": {
                 "abstained": avg_metric("abstained"),
@@ -175,19 +176,28 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
                  "*sibling* of the right one (right neighbourhood, wrong leaf) — the "
                  "vector-RAG failure Vectorless is built to avoid. Lower is better.\n")
     lines.append("`path_coverage` is the share of returned units that carried a "
-                 "heading path at all. Where it is 0 the two path metrics are "
-                 "**undefined, not zero** — a chunk system has no sibling relation, "
-                 "and a structural system reading 0 here means the path index failed "
-                 "rather than that the paths were wrong. Read the row accordingly.\n")
+                 "heading path at all. The two path metrics are **undefined, not "
+                 "zero**, when either side lacks paths: the system returned none "
+                 "(coverage 0), or the DATASET has no gold heading paths at all — "
+                 "FinanceBench ships evidence text and pages only, so "
+                 "`path_correct_top1` there is 0.000 for every system including a "
+                 "perfect one. Those cells print `n/a`, and a `n/a (no gold paths)` "
+                 "note means the claim cannot be made from this corpus.\n")
     lines.append("| System | span_in_top1 | path_correct_top1 | near_miss_rate | path_coverage | abstained(no-answer) |")
     lines.append("|---|---|---|---|---|---|")
     for s, r in _sorted(results):
         c = r["citation"]
         cov = c.get("path_coverage") or 0.0
-        # n/a rather than 0.000: a zero here reads as a perfect score for the
-        # baseline this metric exists to contrast against.
-        path_cell = _fmt(c["path_correct_top1"]) if cov else "n/a"
-        near_cell = _fmt(c["near_miss_rate"]) if cov else "n/a"
+        gold = c.get("gold_has_path") or 0.0
+        # n/a rather than 0.000: a zero here reads as a real score, whether it
+        # came from a chunk baseline with no paths or a corpus with no gold.
+        if not gold:
+            path_cell = near_cell = "n/a (no gold paths)"
+        elif not cov:
+            path_cell = near_cell = "n/a"
+        else:
+            path_cell = _fmt(c["path_correct_top1"])
+            near_cell = _fmt(c["near_miss_rate"])
         lines.append(
             f"| {s} | {_fmt(c['span_in_top1'])} | {path_cell} | "
             f"{near_cell} | {_fmt(cov)} | {_fmt(r['abstention']['abstained'])} |"
@@ -330,9 +340,15 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
     def _cite_row(s, r):
         c = r["citation"]
         cov = c.get("path_coverage") or 0.0
-        # Without a path the two structural metrics are undefined. Printing
-        # 0.000 makes a chunk baseline look flawless on the one axis it
-        # cannot be measured on, so say so instead.
+        gold = c.get("gold_has_path") or 0.0
+        # Without a path on BOTH sides the structural metrics are undefined.
+        # Printing 0.000 makes a chunk baseline look flawless on the one axis
+        # it cannot be measured on, and makes a corpus that carries no gold
+        # paths look like a system failure. Say which it is.
+        if not gold:
+            return [(s, "sys"), (_fmt(c["span_in_top1"]), ""),
+                    ("n/a (no gold paths)", "na"), ("n/a (no gold paths)", "na"),
+                    (_fmt(cov), ""), (_fmt(r["abstention"]["abstained"]), "")]
         if cov:
             path_cell = (_fmt(c["path_correct_top1"]), "")
             near_cell = (_fmt(c["near_miss_rate"]),
