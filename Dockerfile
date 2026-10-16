@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VLBENCH_PAGEINDEX_PATH=/opt/PageIndex
 
-# git: to vendor PageIndex. build-essential: some wheels (psycopg, tiktoken).
+# git: to vendor PageIndex. build-essential: some wheels (psycopg).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git build-essential \
     && rm -rf /var/lib/apt/lists/*

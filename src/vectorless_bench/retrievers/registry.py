@@ -1,7 +1,7 @@
 """Name -> Retriever factory.
 
 Retrievers are imported lazily inside the factory so that a missing optional
-dependency (psycopg, openai, rank_bm25, the vectorless SDK, pageindex) only
+dependency (psycopg, google-genai, rank_bm25, the vectorless SDK, pageindex) only
 fails if you actually ask for that system. Listing or running the mock never
 imports a heavy dependency.
 """

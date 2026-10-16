@@ -86,8 +86,8 @@ class Manifest:
             platform=platform.platform(),
             package_versions={
                 name: _pkg_version(name)
-                for name in ("vectorless-sdk", "openai", "anthropic",
-                             "datasets", "rank-bm25", "psycopg", "tiktoken")
+                for name in ("vectorless-sdk", "google-genai", "sentence-transformers",
+                             "datasets", "rank-bm25", "psycopg", "pageindex")
             },
             warnings=warnings or [],
             extra=extra or {},
