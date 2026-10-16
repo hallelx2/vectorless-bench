@@ -224,8 +224,31 @@ def _throughput(system, questions: List[Question], retriever, cfg: RunConfig, em
     def one(q: Question) -> None:
         emit(_eval_one(system, q, retriever, cfg, None, 0, None))
 
-    with ThreadPoolExecutor(max_workers=max(1, cfg.concurrency)) as pool:
-        list(pool.map(one, questions))
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    n = max(1, cfg.concurrency)
+    pending = iter(questions)
+    capped: Optional[SpendCapReached] = None
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        inflight = set()
+        for q in pending:
+            inflight.add(pool.submit(one, q))
+            if len(inflight) >= n:
+                break
+        while inflight:
+            done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+            for f in done:
+                try:
+                    f.result()
+                except SpendCapReached as e:
+                    capped = e
+            if capped is None:
+                for q in pending:
+                    inflight.add(pool.submit(one, q))
+                    if len(inflight) >= n:
+                        break
+    if capped is not None:
+        raise capped
     wall = time.perf_counter() - t0
     setup_info[system]["throughput"] = {
         "questions": len(questions),

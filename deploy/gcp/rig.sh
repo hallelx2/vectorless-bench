@@ -87,7 +87,7 @@ case $cmd in
     create_vm "$BENCH_VM" bench
     wait_ready "$ENGINE_VM"
     IP=$(engine_ip)
-    on "$BENCH_VM" "sudo bash -c 'echo VECTORLESS_BASE_URL=http://$IP:8080 >> /etc/vlbench.env; echo VLBENCH_ENGINE_PROBE=http://$IP:9101 >> /etc/vlbench.env'"
+    on "$BENCH_VM" "sudo bash -c 'touch /etc/vlbench.env && chmod 600 /etc/vlbench.env && sed -i \"/^\\(VECTORLESS_BASE_URL\\|VLBENCH_ENGINE_PROBE\\)=/d\" /etc/vlbench.env && echo VECTORLESS_BASE_URL=http://$IP:8080 >> /etc/vlbench.env && echo VLBENCH_ENGINE_PROBE=http://$IP:9101 >> /etc/vlbench.env'"
     wait_ready "$BENCH_VM"
     on "$BENCH_VM" "curl -sf http://$IP:8080/v1/version && echo && curl -sf http://$IP:9101/health"
     ;;

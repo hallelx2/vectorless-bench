@@ -55,7 +55,8 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
         calls = [int(r["usage"].get("llm_calls", 0)) for r in ok]
         # Latency from the latency phase only, and only from samples the rig
         # did not flag: a sample measured on a busy machine is not a speed.
-        lat_rows = [r for r in rows if not r.get("error") and r.get("phase", "latency") == "latency"]
+        # First repeat only, like quality and cost: later repeats can run warm.
+        lat_rows = [r for r in first if not r.get("error") and r.get("phase", "latency") == "latency"]
         latencies = [float(r["latency_ms"]) for r in lat_rows if not r.get("flagged")]
         flagged = sum(1 for r in lat_rows if r.get("flagged"))
         reruns = sum(max(0, int(r.get("attempts", 1)) - 1) for r in lat_rows)

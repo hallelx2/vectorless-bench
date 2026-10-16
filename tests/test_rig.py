@@ -63,18 +63,29 @@ def test_real_snapshot_reads_this_machine():
     assert snap["ncpu"] >= 1 and snap["cpu"]["idle"] > 0 and snap["procs"]
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def test_probe_agent_serves_snapshots_and_rtt(tmp_path):
-    proc = subprocess.Popen([sys.executable, "-m", "vectorless_bench.cli", "probe", "--port", "9137", "--bind", "127.0.0.1"])
+    port = _free_port()
+    proc = subprocess.Popen([sys.executable, "-m", "vectorless_bench.cli", "probe", "--port", str(port), "--bind", "127.0.0.1"])
     try:
         import urllib.request
-        for _ in range(50):
+        body = None
+        for _ in range(100):
             try:
-                body = json.loads(urllib.request.urlopen("http://127.0.0.1:9137/snapshot", timeout=1).read())
+                body = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/snapshot", timeout=1).read())
                 break
             except Exception:
                 time.sleep(0.1)
+        assert body is not None, f"probe agent did not start on port {port}"
         assert body["cpu"]["idle"] > 0
-        rig = Rig(RigConfig(probes={"engine": "http://127.0.0.1:9137"}))
+        rig = Rig(RigConfig(probes={"engine": f"http://127.0.0.1:{port}"}))
         v = rig.end(rig.begin())
         assert v["hosts"]["engine"] is not None
     finally:
@@ -130,3 +141,13 @@ def test_rerun_spend_is_counted(tmp_path, monkeypatch):
     assert rows[0]["rerun_cost_usd"] > 0, "two discarded attempts cost money"
     man = json.loads((run_dir / "manifest.json").read_text())
     assert man["extra"]["spend_usd"] >= rows[0]["rerun_cost_usd"] + rows[0]["usage"]["cost_usd"] - 1e-6
+
+
+def test_throughput_spend_cap_stops_new_calls(tmp_path):
+    cfg = RunConfig(dataset="fixtures", systems=["mock"], out_dir=str(tmp_path), phase="throughput",
+                    concurrency=2, rig={"enabled": False}, max_spend_usd=0.000001)
+    run_dir = run(cfg, progress=False)
+    rows = (run_dir / "records.jsonl").read_text().splitlines()
+    assert 1 <= len(rows) <= 2, "at most `concurrency` calls run once the cap is hit"
+    man = json.loads((run_dir / "manifest.json").read_text())
+    assert man["extra"]["stopped"]
