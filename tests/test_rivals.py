@@ -388,6 +388,7 @@ def test_pgvector_loads_text_with_nul_bytes_and_returns_the_original(monkeypatch
 
 def test_the_answer_step_reads_the_systems_own_context_when_given(monkeypatch):
     from vectorless_bench import judge as jmod
+    from vectorless_bench.schema import RetrievedSection
 
     seen = {}
 
@@ -411,6 +412,7 @@ def test_the_answer_step_reads_the_systems_own_context_when_given(monkeypatch):
 
 def test_a_record_keeps_the_answer_it_was_graded_on():
     from vectorless_bench import runner
+    from vectorless_bench.schema import RetrievedSection
     from vectorless_bench.config import RunConfig
     from vectorless_bench.judge import JudgeResult
     from vectorless_bench.schema import GoldAnchor, RetrievalResult, Usage
