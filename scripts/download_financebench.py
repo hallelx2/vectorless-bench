@@ -71,9 +71,10 @@ def main() -> int:
                     failed += 1
                     continue
                 content = resp.content
+            reader = PdfReader(io.BytesIO(content))  # parse first: a broken download is never cached
+            if not pdf.exists():
                 # keep the original PDF (PageIndex parses it with its own pipeline)
                 pdf.write_bytes(content)
-            reader = PdfReader(io.BytesIO(content))
             # Pages separated by a form feed, so the dataset check can tell
             # whether a gold page number holds its gold evidence.
             text = "\f".join(page.extract_text() or "" for page in reader.pages)

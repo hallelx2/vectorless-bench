@@ -379,6 +379,7 @@ class PageIndexRetriever:
                     answer_chars += len(str(ev.get("delta") or ""))
         except Exception as e:  # pragma: no cover - network
             _SINK.exit(usage, token)
+            _SINK.call_seconds(usage)
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
                                    error=str(e)[:500], cold=cold, trace={"tools": tools})
         total_ms = (time.perf_counter() - t0) * 1000.0

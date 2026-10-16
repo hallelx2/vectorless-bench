@@ -74,6 +74,12 @@ class FullContextRetriever:
         self._tokens: Dict[str, int] = {}
         self._caches: Dict[str, Dict[str, object]] = {}
         self._cache_lock = threading.Lock()
+        # Creation is serialised per document, so two questions that miss at
+        # once share one cache; a replaced cache is deleted only once no
+        # retrieval still holds its name.
+        self._doc_locks: Dict[str, threading.Lock] = {}
+        self._refs: Dict[str, int] = {}
+        self._retired: Dict[str, bool] = {}
 
     def setup(self, corpus: List[Doc]) -> None:
         self._docs = {d.doc_id: d for d in corpus}
@@ -95,47 +101,75 @@ class FullContextRetriever:
         return self._tokens[doc.doc_id]
 
     def _cache_for(self, doc: Doc) -> Optional[str]:
+        """A live cache for the document, held for the caller: release it
+        with _release once the request that uses it is done."""
         if not self.cache or self._doc_tokens(doc) < _MIN_CACHE_TOKENS:
             return None
-        c = self._caches.get(doc.doc_id)
-        if c and time.time() < float(c["expires"]) - 60:
-            return str(c["name"])
-        from google.genai import types  # type: ignore
-
-        created = genai_client().caches.create(model=self.model, config=types.CreateCachedContentConfig(
-            contents=[types.Content(role="user", parts=[self._doc_part(doc)])],
-            system_instruction=_SYSTEM, ttl=f"{self.ttl}s", display_name=f"vlbench-{doc.doc_id[:40]}"))
-        entry = {"name": created.name, "created": time.time(), "expires": time.time() + self.ttl,
-                 "tokens": self._doc_tokens(doc)}
         with self._cache_lock:
-            old = self._caches.get(doc.doc_id)
-            self._caches[doc.doc_id] = entry
-        if old is not None:
-            # A cache replaced near expiry, or created twice by two questions
-            # that missed at once, is charged and deleted, never forgotten.
-            self._retire(old)
-        return created.name
+            lock = self._doc_locks.setdefault(doc.doc_id, threading.Lock())
+        with lock:
+            with self._cache_lock:
+                c = self._caches.get(doc.doc_id)
+                if c and time.time() < float(c["expires"]) - 60:
+                    name = str(c["name"])
+                    self._refs[name] = self._refs.get(name, 0) + 1
+                    return name
+            from google.genai import types  # type: ignore
+
+            created = genai_client().caches.create(model=self.model, config=types.CreateCachedContentConfig(
+                contents=[types.Content(role="user", parts=[self._doc_part(doc)])],
+                system_instruction=_SYSTEM, ttl=f"{self.ttl}s", display_name=f"vlbench-{doc.doc_id[:40]}"))
+            entry = {"name": created.name, "created": time.time(), "expires": time.time() + self.ttl,
+                     "tokens": self._doc_tokens(doc)}
+            with self._cache_lock:
+                old = self._caches.get(doc.doc_id)
+                self._caches[doc.doc_id] = entry
+                self._refs[created.name] = self._refs.get(created.name, 0) + 1
+            if old is not None:
+                self._retire(old)  # replaced near expiry: charged now, deleted when unused
+            return created.name
+
+    def _release(self, name: Optional[str]) -> None:
+        if not name:
+            return
+        with self._cache_lock:
+            self._refs[name] = max(0, self._refs.get(name, 0) - 1)
+            delete = self._refs[name] == 0 and self._retired.pop(name, False)
+        if delete:
+            self._delete(name)
+
+    def _delete(self, name: str) -> None:
+        try:
+            genai_client().caches.delete(name=name)
+        except Exception:
+            pass
 
     def _retire(self, c: Dict[str, object]) -> None:
-        """Charge a cache's storage for the time it existed (to expiry at most)
-        and delete it."""
+        """Charge a cache's storage for the time it existed (to expiry at
+        most), and delete it now if no retrieval holds it, else on release."""
         rate = _STORAGE_PER_MTOK_HOUR["pro" if "pro" in self.model else "default"]
         end = min(time.time(), float(c["expires"]))
         hours = max(0.0, end - float(c["created"])) / 3600.0
+        name = str(c["name"])
         with self._cache_lock:
             self.setup_usage.cost_usd += int(c["tokens"]) * hours * rate / 1_000_000.0
-        try:
-            genai_client().caches.delete(name=str(c["name"]))
-        except Exception:
-            pass
+            busy = self._refs.get(name, 0) > 0
+            if busy:
+                self._retired[name] = True
+        if not busy:
+            self._delete(name)
 
     def teardown(self) -> None:
         """Delete the caches and charge their storage to setup cost."""
         with self._cache_lock:
             caches = list(self._caches.values())
             self._caches.clear()
+            leftover = [n for n, flagged in self._retired.items() if flagged]
+            self._retired.clear()
         for c in caches:
             self._retire(c)
+        for name in leftover:  # still held at teardown: the run is over, delete anyway
+            self._delete(name)
 
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
         from google.genai import types  # type: ignore
@@ -156,8 +190,11 @@ class FullContextRetriever:
             cache = self._cache_for(doc)
             q = types.Part(text=f"QUESTION:\n{question.question}")
             contents = [types.Content(role="user", parts=[q] if cache else [self._doc_part(doc), q])]
-            out = generate(self.model, system=_SYSTEM, contents=contents, max_tokens=self.max_output_tokens,
-                           json_mode=True, cached_content=cache)
+            try:
+                out = generate(self.model, system=_SYSTEM, contents=contents, max_tokens=self.max_output_tokens,
+                               json_mode=True, cached_content=cache)
+            finally:
+                self._release(cache)
         except Exception as e:  # pragma: no cover - network
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, error=str(e), cold=cold)
         sections = self._parse(out.text)[:k]

@@ -155,3 +155,27 @@ def test_a_corpus_question_keeps_the_whole_corpus(monkeypatch):
     monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: _DS())
     _, corpus, questions = runner._load_dataset(RunConfig(dataset="multihop_rag", limit=1))
     assert len(questions) == 1 and len(corpus) == 10
+
+
+
+def test_a_question_keeps_every_file_its_gold_spans(monkeypatch):
+    from vectorless_bench import runner
+    from vectorless_bench.config import RunConfig
+    from vectorless_bench.schema import Doc, Question
+
+    docs = [Doc(doc_id=f"f{i}.txt", title="f", content="x") for i in range(5)]
+
+    class _DS:
+        def corpus(self):
+            return docs
+
+        def questions_for_available_corpus(self):
+            return [Question(qid="q", doc_id="f0.txt", question="?", answer="x",
+                             meta={"spans": [("f0.txt", [0, 1]), ("f3.txt", [0, 1])]})]
+
+        def subset(self, qs, limit, seed=0):
+            return qs[:limit]
+
+    monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: _DS())
+    _, corpus, _ = runner._load_dataset(RunConfig(dataset="legalbench_rag", limit=1))
+    assert sorted(d.doc_id for d in corpus) == ["f0.txt", "f3.txt"]

@@ -50,9 +50,12 @@ def chunk_doc(
             j = text.rfind(" ", i, end)
             if j > i:
                 end = j
-        piece = text[i:end].strip()
+        raw = text[i:end]
+        piece = raw.strip()
         if piece:
-            chunks.append(Chunk(doc.doc_id, f"{doc.doc_id}::ch{idx}", piece, i))
+            # the offset of the stored (stripped) text, so text[start:start+len] == piece
+            lead = len(raw) - len(raw.lstrip())
+            chunks.append(Chunk(doc.doc_id, f"{doc.doc_id}::ch{idx}", piece, i + lead))
             idx += 1
         if end >= n:
             break

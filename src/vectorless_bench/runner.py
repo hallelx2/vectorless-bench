@@ -79,7 +79,13 @@ def _load_dataset(cfg: RunConfig):
     # made of answers, so the full corpus is kept.
     if any(q.doc_id == CORPUS for q in questions):
         return ds, corpus, questions
+    # A per-document question may also cite other documents (a LegalBench
+    # query whose snippets span files): those stay in, or their gold could
+    # never be retrieved and recall would read low.
     needed = {q.doc_id for q in questions}
+    for q in questions:
+        needed.update(q.meta.get("doc_ids") or [])
+        needed.update(fp for fp, _ in (q.meta.get("spans") or []))
     corpus = [d for d in corpus if d.doc_id in needed]
     return ds, corpus, questions
 

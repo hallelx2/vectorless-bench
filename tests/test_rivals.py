@@ -306,6 +306,7 @@ def test_full_context_charges_a_cache_to_its_expiry_and_charges_a_replaced_one(m
     r = fc.FullContextRetriever.__new__(fc.FullContextRetriever)
     import threading
     r.model, r.setup_usage, r._cache_lock, r._caches = "gemini-3.5-flash-lite", Usage(), threading.Lock(), {}
+    r._refs, r._retired, r._doc_locks = {}, {}, {}
     now = _t.time()
     # created 3 h ago, expired after 1 h: billed 1 h, not 3
     r._retire({"name": "c", "created": now - 3 * 3600, "expires": now - 2 * 3600, "tokens": 1_000_000})
@@ -331,3 +332,31 @@ def test_raptor_charges_concurrent_queries_to_their_own_usage():
     ta.start(); tb.start(); ta.join(); tb.join()
     assert seen == {"a": True, "b": True}
     assert getattr(r._target, "usage", None) is None  # the main thread is charged to setup
+
+
+
+def test_a_replaced_cache_is_kept_until_its_last_user_releases_it(monkeypatch):
+    import threading
+    import time as _t
+    from vectorless_bench.retrievers import full_context as fc
+    from vectorless_bench.schema import Usage
+
+    deleted = []
+    monkeypatch.setattr(fc, "genai_client", lambda: type("C", (), {"caches": type("K", (), {
+        "delete": staticmethod(lambda name: deleted.append(name))})()})())
+    r = fc.FullContextRetriever.__new__(fc.FullContextRetriever)
+    r.model, r.setup_usage, r._cache_lock, r._caches = "gemini-3.5-flash-lite", Usage(), threading.Lock(), {}
+    r._refs, r._retired, r._doc_locks = {"old": 1}, {}, {}  # a request is still using "old"
+    now = _t.time()
+    r._retire({"name": "old", "created": now - 60, "expires": now + 3000, "tokens": 1000})
+    assert deleted == [], "a cache still in use must not be deleted"
+    r._release("old")
+    assert deleted == ["old"]
+
+
+def test_a_chunk_offset_points_at_its_own_text():
+    from vectorless_bench.retrievers._chunk import chunk_doc
+
+    text = "  lead space.\n\n   " + " ".join(f"w{i}" for i in range(2000))
+    for c in chunk_doc(Doc(doc_id="d", title="d", content=text), 100, 10):
+        assert text[c.start:c.start + len(c.text)] == c.text
