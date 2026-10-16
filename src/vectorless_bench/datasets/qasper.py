@@ -126,8 +126,11 @@ class QasperDataset(Dataset):
                 if not para or key in seen:
                     continue
                 seen.add(key)
-                win = _files.probe(para)
-                gold.append(GoldAnchor(doc_id=pid, answer_spans=[win], page=_files.page_of(win, pages)))
+                wins = _files.probes(para)
+                if not wins:
+                    continue
+                page = next((pg for pg in (_files.page_of(w, pages) for w in wins) if pg), None)
+                gold.append(GoldAnchor(doc_id=pid, answer_spans=wins, page=page))
         return Question(
             qid=qid, doc_id=pid, question=qtext,
             gold=gold,

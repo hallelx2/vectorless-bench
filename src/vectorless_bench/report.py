@@ -31,6 +31,27 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _reachable_block(ok, k: int):
+    rows = [r for r in ok if r["metrics"].get("gold_reachable") == 1.0]
+    measured = sum(1 for r in ok if "gold_reachable" in r["metrics"])
+    if not measured:
+        return None
+
+    def avg(name: str):
+        vals = [r["metrics"][name] for r in rows if name in r["metrics"]]
+        return _mean(vals) if vals else None
+
+    return {
+        "n": len(rows),
+        "share_of_scored": round(len(rows) / measured, 4),
+        "primary": _mean([primary_quality(r["metrics"], k) for r in rows]) if rows else None,
+        f"recall@{k}": avg(f"recall@{k}"),
+        f"hit@{k}": avg(f"hit@{k}"),
+        "mrr": avg("mrr"),
+        f"ndcg@{k}": avg(f"ndcg@{k}"),
+    }
+
+
 def _mean(xs: List[float]) -> float:
     return statistics.fmean(xs) if xs else 0.0
 
@@ -104,6 +125,18 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
             },
             "abstention": {
                 "abstained": avg_metric("abstained"),
+            },
+            # The same retrieval metrics over only the questions whose gold
+            # is findable in the extracted text (datasets.base.gold_reachable).
+            "reachable": _reachable_block(ok, k),
+            "answer": {
+                "graded": sum(1 for r in ok if "answer_correct" in r["metrics"]),
+                "accuracy": avg_metric("answer_correct"),
+                "correct": avg_metric("verdict_correct"),
+                "partially_correct": avg_metric("verdict_partially_correct"),
+                "abstained": avg_metric("verdict_abstained"),
+                "grade_repeat_agreement": avg_metric("grade_repeat_agree"),
+                "judge_usd": sum(r["metrics"].get("judge_usd", 0.0) for r in ok),
             },
             "cost": aggregate.cost_summary(costs, qualities, toks, calls, corrects=_corrects(ok, k)),
             "latency_ms": aggregate.percentiles(latencies),

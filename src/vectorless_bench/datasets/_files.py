@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -80,16 +81,43 @@ def text_pages(txt: Path) -> List[str]:
     return txt.read_text(encoding="utf-8", errors="ignore").split(PAGE_BREAK)
 
 
-def probe(text: str, words: int = 12) -> str:
-    """A short, distinctive window of a long evidence passage: the words a
-    PDF extraction is most likely to reproduce verbatim. Long paragraphs
-    differ from their PDF rendering in hyphenation and line breaks, which a
-    12-word window from the middle rarely crosses."""
+_PLACEHOLDER = re.compile(r"^(secref|inlineform|displayform|bibref|tabref|figref|citation)\d*$")
+
+
+def probes(text: str, words: int = 12, n: int = 2) -> List[str]:
+    """Up to `n` short, distinctive windows of a long evidence passage: the
+    words a PDF extraction is most likely to reproduce verbatim. Long
+    paragraphs differ from their PDF rendering in hyphenation and line
+    breaks, which a 12-word window rarely crosses. Windows avoid S2ORC's
+    placeholder tokens (SECREF3, INLINEFORM1, BIBREF7), which stand for a
+    reference or formula and never appear in the PDF text; a run of text
+    without one is preferred, from the middle outward."""
     toks = norm_text(text).split()
     if len(toks) <= words:
-        return " ".join(toks)
-    start = max(0, (len(toks) - words) // 2)
-    return " ".join(toks[start : start + words])
+        clean = [t for t in toks if not _PLACEHOLDER.match(t)]
+        return [" ".join(clean)] if clean else []
+    starts = sorted(range(0, len(toks) - words + 1), key=lambda s: abs(s - (len(toks) - words) // 2))
+    out: List[str] = []
+    used: List[int] = []
+    for s in starts:
+        win = toks[s : s + words]
+        if any(_PLACEHOLDER.match(t) for t in win) or any(abs(s - u) < words for u in used):
+            continue
+        out.append(" ".join(win))
+        used.append(s)
+        if len(out) == n:
+            break
+    if not out:  # every window crosses a placeholder: drop them and take the middle
+        clean = [t for t in toks if not _PLACEHOLDER.match(t)]
+        mid = max(0, (len(clean) - words) // 2)
+        out = [" ".join(clean[mid : mid + words])] if clean else []
+    return out
+
+
+def probe(text: str, words: int = 12) -> str:
+    """The single best window (see probes)."""
+    p = probes(text, words, 1)
+    return p[0] if p else ""
 
 
 def page_of(span: str, pages: Sequence[str]) -> Optional[int]:

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..schema import AnswerType, Doc, GoldAnchor, Question
 from . import _files
@@ -72,15 +72,27 @@ class MMLongBenchDocDataset(Dataset):
                                 path=str(pdf), content_type="text/plain"))
         return docs
 
+    def _page_texts(self) -> Dict[str, List[str]]:
+        from ._files import PAGE_BREAK
+
+        if getattr(self, "_pt", None) is None:
+            self._pt = {d.doc_id: d.content.split(PAGE_BREAK) for d in self.corpus()}
+        return self._pt
+
     def questions(self) -> List[Question]:
         out = []
+        texts = self._page_texts()
         for i, r in enumerate(self._load()):
             pages = [int(p) for p in _list(r.get("evidence_pages")) if str(p).isdigit()]
             sources = [str(s) for s in _list(r.get("evidence_sources"))]
             answer = str(r.get("answer", "")).strip()
             na = answer.lower() == "not answerable"
-            spans = [answer] if answer and not na and len(answer) <= 120 else []
-            gold = [GoldAnchor(doc_id=r["doc_id"], answer_spans=spans, page=p) for p in pages]
+            # The answer is not evidence: "8" or a list of countries is in
+            # countless sections. The gold is the page itself, matched by text
+            # overlap (anchors.page_text_overlaps) or by page number.
+            doc_pages = texts.get(r["doc_id"], [])
+            gold = [GoldAnchor(doc_id=r["doc_id"], page=p,
+                               page_text=doc_pages[p - 1] if 1 <= p <= len(doc_pages) else "") for p in pages]
             out.append(Question(
                 qid=f"mmlb_{i:04d}", doc_id=r["doc_id"], question=r["question"],
                 gold=[] if na else gold,

@@ -68,12 +68,14 @@ def test_mmlongbench_pages(tmp_path):
                              "question": ["share?", "unknown?"], "answer": ["42%", "Not answerable"],
                              "evidence_pages": ["[2]", "[]"], "evidence_sources": ["['Chart']", "[]"],
                              "answer_format": ["Str", "None"]}), d / "questions.parquet")
-    (d / "documents" / "r.txt").write_text("cover" + PAGE_BREAK + "the share was 42% in 2023")
+    body = " ".join(f"token{i}" for i in range(40)) + " the share was 42% in 2023"
+    (d / "documents" / "r.txt").write_text("cover" + PAGE_BREAK + body)
     ds = build_dataset("mmlongbench_doc", data_dir=str(d))
     qs = ds.questions()
     assert qs[0].gold[0].page == 2 and qs[0].domain == "chart" and qs[1].answer_type == AnswerType.NO_ANSWER
     c = ds.check()
-    assert c["page_ok_pct"] == 100.0 and c["page_off_by_one_pct"] == 0.0
+    assert c["page_text_anchors"] == 1 and c["page_text_matchable_pct"] == 100.0
+    assert qs[0].gold[0].page_text == body and not qs[0].gold[0].answer_spans  # the answer is not evidence
 
 
 def test_manuals_reads_malformed_json_and_builds_headings(tmp_path):
@@ -115,3 +117,14 @@ def test_qasper_evidence_window_and_page(tmp_path):
     assert qs[0].answer == "1,017 dialogues" and qs[0].gold[0].page == 2
     assert qs[1].answer_type == AnswerType.NO_ANSWER
     assert len(probe(para).split()) == 12
+
+
+def test_gold_reachable_marks_questions_no_system_can_win(tmp_path):
+    from vectorless_bench.datasets.base import gold_reachable
+    from vectorless_bench.schema import Doc, GoldAnchor, Question
+
+    docs = {"d": Doc(doc_id="d", title="d", content="the revenue grew to 1,577 million in fiscal 2023")}
+    found = Question(qid="a", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", answer_spans=["revenue grew to 1,577 million"])], answer="x")
+    lost = Question(qid="b", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", answer_spans=["a chart of churn by region"])], answer="x")
+    figure = Question(qid="c", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", page=4, page_text="Figure 3")], answer="x")
+    assert gold_reachable(found, docs) and not gold_reachable(lost, docs) and not gold_reachable(figure, docs)

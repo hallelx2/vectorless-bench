@@ -43,14 +43,16 @@ class Dataset(ABC):
     def questions_for_available_corpus(self) -> List[Question]:
         """Questions whose documents are present, so a partial download is a
         smaller valid run rather than a run full of errors."""
-        have = {d.doc_id for d in self.corpus()}
+        docs = {d.doc_id: d for d in self.corpus()}
         out = []
         for q in self.questions():
             if q.doc_id == CORPUS:
-                if all(d in have for d in q.meta.get("doc_ids", [])):
+                if all(d in docs for d in q.meta.get("doc_ids", [])):
                     out.append(q)
-            elif q.doc_id in have:
+            elif q.doc_id in docs:
                 out.append(q)
+        for q in out:
+            q.meta["gold_reachable"] = gold_reachable(q, docs)
         return out
 
     def subset(
@@ -99,6 +101,7 @@ class Dataset(ABC):
         for q in all_q:
             needed.update(q.meta.get("doc_ids", []) if q.doc_id == CORPUS else [q.doc_id])
         anchors = span_anchors = span_found = paged = page_ok = off_by_one = 0
+        page_text_anchors = page_text_matchable = 0
         for q in avail:
             for g in q.gold:
                 anchors += 1
@@ -109,6 +112,13 @@ class Dataset(ABC):
                     span_anchors += 1
                     if any(span_present(sp, d.content) for sp in g.answer_spans):
                         span_found += 1
+                if g.page_text or (g.page is not None and not g.answer_spans):
+                    page_text_anchors += 1
+                    from ..anchors import page_text_overlaps
+
+                    if g.page_text and page_text_overlaps(g.page_text, g.page_text):
+                        page_text_matchable += 1
+                    continue
                 if g.page is not None and PAGE_BREAK in d.content:
                     pages = d.content.split(PAGE_BREAK)
                     paged += 1
@@ -134,8 +144,35 @@ class Dataset(ABC):
             "page_anchors_checked": paged,
             "page_ok_pct": pct(page_ok, paged),
             "page_off_by_one_pct": pct(off_by_one, paged),
+            "page_text_anchors": page_text_anchors,
+            "page_text_matchable_pct": pct(page_text_matchable, page_text_anchors),
             "corpus_chars": sum(len(d.content) for d in docs.values()),
         }
+
+
+def gold_reachable(q: Question, docs: Dict[str, Doc]) -> bool:
+    """Can any system that reads our extracted text find this question's
+    gold at all? True when at least one anchor matches its own document's
+    text: a span present, a heading path given, or a gold page with text.
+    A question whose gold evidence is a figure, or a passage the PDF
+    extraction mangled, is a miss for every system alike; the report scores
+    such questions in the full set and also gives the reachable subset, so
+    the comparison is not diluted by questions no one can win."""
+    from ..anchors import page_text_overlaps, span_present
+
+    if q.is_no_answer:
+        return True
+    for g in q.gold:
+        d = docs.get(g.doc_id)
+        if d is None:
+            continue
+        if g.title_path:
+            return True
+        if g.answer_spans and any(span_present(sp, d.content) for sp in g.answer_spans):
+            return True
+        if g.page_text and page_text_overlaps(g.page_text, g.page_text):
+            return True
+    return False
 
 
 DATASETS = ["fixtures", "financebench", "qasper", "cuad", "legalbench_rag", "mmlongbench_doc", "multihop_rag", "manuals"]

@@ -73,6 +73,11 @@ class GoldAnchor:
     answer_spans: List[str] = field(default_factory=list)
     # 1-based page number in the source document, when applicable.
     page: Optional[int] = None
+    # The gold page's extracted text, for datasets whose gold is a page and
+    # not a passage (MMLongBench-Doc). A section hits when it shares enough
+    # of this text (anchors.page_text_overlaps); most systems return no page
+    # number, so matching on `page` alone would score them all zero.
+    page_text: str = ""
 
     def parent_path(self) -> List[str]:
         return self.title_path[:-1]
