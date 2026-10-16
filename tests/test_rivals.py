@@ -46,6 +46,7 @@ def test_memwalker_walks_to_the_answer(monkeypatch):
         return _Out(_j.dumps({"action": "accept" if "capital expenditure" in user else "back"}))
 
     monkeypatch.setattr(mw, "complete", fake)
+    monkeypatch.setattr(mw, "complete_patient", fake)
     body = ("filler words " * 400 + "\n") * 8 + "capital expenditure was 1,577 million.\n" + ("tail words " * 400 + "\n") * 8
     r = mw.MemWalkerRetriever(segment_tokens=300, fanout=3)
     r.setup([Doc(doc_id="d", title="d", content=body)])
@@ -69,6 +70,7 @@ def test_readagent_rereads_the_chosen_page(monkeypatch):
         return _Out(_j.dumps({"pages": pages}))
 
     monkeypatch.setattr(ra, "complete", fake)
+    monkeypatch.setattr(ra, "complete_patient", fake)
     paras = ["word " * 150 for _ in range(12)]
     paras[7] = "capital expenditure was 1,577 million. " + "word " * 140
     r = ra.ReadAgentRetriever(min_words=280, max_words=600)
@@ -140,6 +142,7 @@ def test_memwalker_root_never_reverts(monkeypatch):
         return _Out(_j.dumps({"action": "accept"}))
 
     monkeypatch.setattr(mw, "complete", fake)
+    monkeypatch.setattr(mw, "complete_patient", fake)
     r = mw.MemWalkerRetriever(segment_tokens=300, fanout=3)
     r.setup([Doc(doc_id="d", title="d", content=("words " * 400 + "\n") * 12)])
     out = r.retrieve(Question(qid="q", doc_id="d", question="?"), k=3)
