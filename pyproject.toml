@@ -24,7 +24,7 @@ vector = ["google-genai>=1.30", "psycopg[binary]>=3.1", "pgvector>=0.3", "senten
 # the BM25 baseline
 bm25 = ["rank-bm25>=0.2.2"]
 # the system under test
-vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@halleluyaholudele/hal-3068-python-sdk-typed-timing-on-query-and-answer-responses-the#subdirectory=python"]
+vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@c7a1f42#subdirectory=python"]
 # public datasets (FinanceBench) + PDF extraction for the downloader
 data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31"]
 # plots in the report

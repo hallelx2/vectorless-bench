@@ -4530,14 +4530,14 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'vector'", specifier = ">=3.0" },
     { name = "vectorless-sdk", marker = "extra == 'all'", specifier = ">=0.1" },
-    { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=halleluyaholudele%2Fhal-3068-python-sdk-typed-timing-on-query-and-answer-responses-the" },
+    { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42" },
 ]
 provides-extras = ["llm", "vector", "bm25", "vectorless", "data", "viz", "all", "dev"]
 
 [[package]]
 name = "vectorless-sdk"
 version = "1.0.1"
-source = { git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=halleluyaholudele%2Fhal-3068-python-sdk-typed-timing-on-query-and-answer-responses-the#c1e02dd05151537dbddf82b9c8b228500595e689" }
+source = { git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42#c7a1f421411cce2c1d388d52305d511650c3205c" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
