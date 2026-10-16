@@ -144,3 +144,25 @@ def test_memwalker_root_never_reverts(monkeypatch):
     r.setup([Doc(doc_id="d", title="d", content=("words " * 400 + "\n") * 12)])
     out = r.retrieve(Question(qid="q", doc_id="d", question="?"), k=3)
     assert out.sections and out.trace["root_choices_forced"] >= 1 and out.trace["accepted"]
+
+
+def test_embedding_cache_is_per_document_and_keeps_measured_seconds(monkeypatch, tmp_path):
+    from vectorless_bench.retrievers.vector_rag import VectorRagRetriever
+
+    calls = []
+
+    def fake_embed(self, texts):
+        calls.append(len(texts))
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(VectorRagRetriever, "_embed", fake_embed)
+    monkeypatch.setenv("VLBENCH_EMBED_CACHE", str(tmp_path))
+    docs = [Doc(doc_id="a", title="a", content="alpha " * 50), Doc(doc_id="b", title="b", content="beta " * 50)]
+    r1 = VectorRagRetriever(embedding_model="gemini-embedding-2", backend="memory", chunk_tokens=20, overlap_tokens=0)
+    r1.setup(docs)
+    first = len(calls)
+    r2 = VectorRagRetriever(embedding_model="gemini-embedding-2", backend="memory", chunk_tokens=20, overlap_tokens=0)
+    r2.setup(docs[:1])  # a subset hits the same per-document cache
+    assert len(calls) == first and r2.setup_meta["embedding_cache_hits"] == 1
+    assert r2.setup_usage.cost_usd > 0, "a cache hit still prices the ingest"
+    assert "embedding_seconds_measured" in r2.setup_meta

@@ -116,6 +116,29 @@ def cmd_datasets(args: argparse.Namespace) -> int:
     return status
 
 
+def cmd_embed(args: argparse.Namespace) -> int:
+    """Build the per-document embedding cache for a dataset ahead of a run,
+    with the same chunking the vector systems use. The seconds each document
+    took are stored with its vectors and reported by the run that reads them."""
+    import json as _json
+    import os
+
+    from .datasets import build_dataset
+    from .retrievers.vector_rag import VectorRagRetriever
+
+    os.environ.setdefault("VLBENCH_EMBED_PROGRESS", "1")
+    names = [n for n in __import__("vectorless_bench.datasets", fromlist=["available"]).available() if n != "fixtures"] \
+        if args.name == "all" else [args.name]
+    for name in names:
+        corpus = build_dataset(name, **(_json.loads(args.params) if args.params else {})).corpus()
+        r = VectorRagRetriever(embedding_model=args.model, backend="memory",
+                               chunk_tokens=args.chunk_tokens, overlap_tokens=args.overlap_tokens)
+        r.setup(corpus)
+        print(_json.dumps({"dataset": name, "model": args.model, "docs": len(corpus), "chunks": len(r._chunks),
+                           "embedding_usd": round(r.setup_usage.cost_usd, 4), **r.setup_meta}), flush=True)
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     from .hostprobe import serve
 
@@ -159,6 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
     ds.add_argument("name", nargs="?", default="all", help="a dataset name, or all")
     ds.add_argument("--params", help='dataset params as JSON, e.g. \'{"mini": true}\'')
     ds.set_defaults(func=cmd_datasets)
+
+    em = sub.add_parser("embed", help="pre-build the embedding cache for a dataset")
+    em.add_argument("name", help="a dataset name, or all")
+    em.add_argument("--model", default="BAAI/bge-base-en-v1.5")
+    em.add_argument("--chunk-tokens", type=int, default=512)
+    em.add_argument("--overlap-tokens", type=int, default=64)
+    em.add_argument("--params", help="dataset params as JSON")
+    em.set_defaults(func=cmd_embed)
 
     pr = sub.add_parser("probe", help="host evidence agent (run on the engine VM)")
     pr.add_argument("--port", type=int, default=9101)

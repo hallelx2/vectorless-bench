@@ -52,6 +52,7 @@ class VectorRagRetriever:
         self.reranker = reranker
         self.setup_seconds = 0.0
         self.setup_usage = Usage()
+        self.setup_meta: dict = {}
         self._chunks: List[Chunk] = []
         self._vectors: List[List[float]] = []  # memory backend
         self._conn = None
@@ -64,29 +65,70 @@ class VectorRagRetriever:
 
     # -- embeddings --------------------------------------------------------
 
-    def _cached_embed(self, texts: List[str]) -> List[List[float]]:
+    def _cached_embed(self, chunks: List[Chunk]) -> List[List[float]]:
+        """Embed every chunk, caching per document on disk.
+
+        The cache is keyed by model and one document's chunk texts, so a
+        pilot over a sample and the full run share it, and `vlbench embed`
+        can build it ahead of the timed run. A hit is not free: its ingest
+        cost is priced from the token count every time, and the seconds the
+        original embedding took (and on what host) are kept beside the
+        vectors and reported as embedding_seconds_measured, so a CPU model's
+        real ingest time is never hidden by a warm cache."""
         import hashlib
         import json as _json
+        import platform
+        import sys
+        import time
         from pathlib import Path
 
-        key = hashlib.sha256((self.embedding_model + "\x00" + "\x00".join(texts)).encode()).hexdigest()[:24]
-        cache = Path("data/cache") / f"emb-{self.embedding_model.replace('/', '_')}-{key}.json"
-        if cache.exists():
-            self.setup_meta = {"embedding_cache": "hit", "cache_file": str(cache)}
-            return _json.loads(cache.read_text())
-        batch = 128
-        vectors: List[List[float]] = []
-        for i in range(0, len(texts), batch):
-            vectors.extend(self._embed(texts[i : i + batch]))
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(_json.dumps(vectors))
-        self.setup_meta = {"embedding_cache": "miss", "cache_file": str(cache)}
-        return vectors
+        import numpy as np
+
+        root = Path(os.environ.get("VLBENCH_EMBED_CACHE", "data/cache/embeddings")) / self.embedding_model.replace("/", "_")
+        root.mkdir(parents=True, exist_ok=True)
+        by_doc: dict = {}
+        for i, c in enumerate(chunks):
+            by_doc.setdefault(c.doc_id, []).append(i)
+        out: List[Optional[List[float]]] = [None] * len(chunks)
+        hits = misses = 0
+        measured = 0.0
+        hosts = set()
+        for n, (doc_id, idxs) in enumerate(by_doc.items()):
+            texts = [chunks[i].text for i in idxs]
+            toks = sum(count_tokens(t, self.embedding_model) for t in texts)
+            self.setup_usage.embedding_tokens += toks
+            self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
+            key = hashlib.sha256((self.embedding_model + "\x00" + "\x00".join(texts)).encode()).hexdigest()[:32]
+            vec_file, meta_file = root / f"{key}.npy", root / f"{key}.json"
+            if vec_file.exists() and meta_file.exists():
+                vecs = np.load(vec_file)
+                meta = _json.loads(meta_file.read_text())
+                hits += 1
+            else:
+                t0 = time.perf_counter()
+                vecs_l: List[List[float]] = []
+                for j in range(0, len(texts), 128):
+                    vecs_l.extend(self._embed(texts[j : j + 128]))
+                secs = time.perf_counter() - t0
+                vecs = np.asarray(vecs_l, dtype=np.float32)
+                meta = {"doc_id": doc_id, "chunks": len(texts), "tokens": toks, "seconds": secs,
+                        "host": platform.node(), "cpus": os.cpu_count(), "model": self.embedding_model,
+                        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                np.save(vec_file, vecs)
+                meta_file.write_text(_json.dumps(meta))
+                misses += 1
+                if os.environ.get("VLBENCH_EMBED_PROGRESS"):
+                    print(f"[embed] {n + 1}/{len(by_doc)} {doc_id}: {len(texts)} chunks in {secs:.1f}s", file=sys.stderr, flush=True)
+            measured += float(meta.get("seconds", 0.0))
+            hosts.add(f"{meta.get('host')} ({meta.get('cpus')} cpus)")
+            for i, v in zip(idxs, vecs):
+                out[i] = [float(x) for x in v]
+        self.setup_meta = {"embedding_cache_hits": hits, "embedding_cache_misses": misses,
+                           "embedding_seconds_measured": round(measured, 2), "embedding_hosts": sorted(hosts)}
+        return out  # type: ignore[return-value]
 
     def _embed(self, texts: Sequence[str]) -> List[List[float]]:
-        toks = sum(count_tokens(t, self.embedding_model) for t in texts)
-        self.setup_usage.embedding_tokens += toks
-        self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
+        # pricing happens in _cached_embed (setup) and retrieve (query)
         if self.embedding_model.startswith("gemini-embedding"):
             return self._embed_gemini(texts)
         if "/" in self.embedding_model:  # a Hugging Face id: run it locally
@@ -160,7 +202,7 @@ class VectorRagRetriever:
         # Embeddings are cached on disk keyed by model and chunk text, so a
         # re-run of the bench does not repeat a CPU-hours ingest. The
         # first, uncached pass is the one whose setup_seconds is reported.
-        vectors = self._cached_embed([c.text for c in self._chunks])
+        vectors = self._cached_embed(self._chunks)
 
         if vectors:
             self.dim = len(vectors[0])  # the model decides: bge-small 384, gemini 768, bge-m3 1024
@@ -203,12 +245,11 @@ class VectorRagRetriever:
                 f"CREATE TABLE {self._table} (id serial primary key, "
                 f"doc_id text, chunk_id text, text text, embedding vector({self.dim}))"
             )
-            import numpy as np
-
-            with cur.copy(f"COPY {self._table} (doc_id, chunk_id, text, embedding) FROM STDIN WITH (FORMAT BINARY)") as cp:
-                cp.set_types(["text", "text", "text", "vector"])
+            # text-format COPY with pgvector literals: binary COPY needs the
+            # vector type in psycopg's registry, which register_vector does not add
+            with cur.copy(f"COPY {self._table} (doc_id, chunk_id, text, embedding) FROM STDIN") as cp:
                 for ch, vec in zip(self._chunks, vectors):
-                    cp.write_row((ch.doc_id, ch.chunk_id, ch.text, np.asarray(vec, dtype=np.float32)))
+                    cp.write_row((ch.doc_id, ch.chunk_id, ch.text, "[" + ",".join(f"{x:.7g}" for x in vec) + "]"))
             # exact search: a per-document filter leaves a few hundred rows,
             # and an approximate index would cost the baseline recall it
             # would not have in a tuned deployment of this size
@@ -257,10 +298,7 @@ class VectorRagRetriever:
         # Same provider as setup — local, Gemini or OpenAI — so a local
         # model never reaches for an OpenAI client at query time. The
         # query's tokens are priced by the caller, not folded into ingest.
-        before = self.setup_usage.embedding_tokens, self.setup_usage.cost_usd
-        vec = self._embed([self._query_text(q)])[0]
-        self.setup_usage.embedding_tokens, self.setup_usage.cost_usd = before
-        return vec
+        return self._embed([self._query_text(q)])[0]
 
     # BGE v1.5 English models are trained with this instruction on the query
     # side only (BAAI's model card); without it their retrieval drops.
@@ -277,10 +315,13 @@ class VectorRagRetriever:
         # query vector is bound twice; doc filter is bound between them.
         scoped = self.per_doc and doc_id != CORPUS  # a corpus-level question searches every chunk
         where = "WHERE doc_id = %s" if scoped else ""
-        params = [qvec] + ([doc_id] if scoped else []) + [qvec, k]
+        # a Python list binds as double precision[], which <=> does not take;
+        # pass the pgvector literal and cast it
+        lit = "[" + ",".join(f"{x:.7g}" for x in qvec) + "]"
+        params = [lit] + ([doc_id] if scoped else []) + [lit, k]
         sql = (
-            f"SELECT chunk_id, text, 1 - (embedding <=> %s) AS score "
-            f"FROM {self._table} {where} ORDER BY embedding <=> %s LIMIT %s"
+            f"SELECT chunk_id, text, 1 - (embedding <=> %s::vector) AS score "
+            f"FROM {self._table} {where} ORDER BY embedding <=> %s::vector LIMIT %s"
         )
         with self._conn.cursor() as cur:
             cur.execute(sql, params)
