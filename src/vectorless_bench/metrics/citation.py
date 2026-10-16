@@ -8,6 +8,23 @@ than generic retrieval quality:
 - near-miss rate: did the system grab a sibling of the right section (right
   neighbourhood, wrong leaf)? This is the exact vector-RAG failure the
   whitepaper argues against, so we measure it head-on.
+- path coverage / gold_has_path: whether the two metrics above could be
+  computed at all. They are silent about the difference between "measured,
+  and the answer is zero" and "could not be measured", and both failures
+  look identical in a report — a 0.000 that reads as a real score.
+
+  There are two independent ways they become unmeasurable:
+
+  * the SYSTEM returned no heading paths (`path_coverage == 0`). A chunk
+    system has no sibling relation, so its near-miss rate is undefined, not
+    0.0 — and 0.0 reads as a perfect score for the very baseline these
+    metrics exist to contrast against.
+  * the DATASET carries no gold heading paths (`gold_has_path == 0`).
+    FinanceBench ships evidence text and page numbers only, so
+    `path_correct_top1` is 0.000 there for EVERY system including a perfect
+    one. Claiming path-correctness from a FinanceBench run is claiming a
+    number the corpus cannot produce. Use a dataset whose gold carries
+    `title_path` (the fixtures corpus does) or annotate one.
 - abstention: on NO_ANSWER questions, did the system correctly return nothing?
 """
 
@@ -26,8 +43,11 @@ def citation_metrics(
         return {
             "span_in_top1": 0.0,
             "span_in_any": 0.0,
-            "path_correct_top1": 0.0,
-            "near_miss_rate": 0.0,
+            # Nothing returned: a real miss on path-correctness when the
+            # question has a gold path; near-miss has no units to rate.
+            **({"path_correct_top1": 0.0} if any(g.title_path for g in golds) else {}),
+            "path_coverage": 0.0,
+            "gold_has_path": 1.0 if any(g.title_path for g in golds) else 0.0,
         }
 
     top1 = sections[0]
@@ -42,19 +62,27 @@ def citation_metrics(
         for g in golds
         for sp in g.answer_spans
     )
-    # path-correctness is STRUCTURAL: it requires an actual heading-path match,
-    # so chunk systems (no paths) correctly score 0 here — that gap is the point.
-    path_top1 = any(
-        top1.title_path and g.title_path and path_matches(g.title_path, top1.title_path)
-        for g in golds
-    )
-    near = sum(1 for s in sections if is_sibling_near_miss(s, golds))
-    return {
+    # Path metrics are STRUCTURAL and only exist where both sides have a
+    # path. A metric that cannot be measured for this question is left OUT
+    # of the dict, never written as 0.0: averages then run over the
+    # questions that could be scored, and a system or corpus with no paths
+    # reads "n/a" instead of a score of zero (HAL-1564).
+    gold_has_path = any(g.title_path for g in golds)
+    with_path = [s for s in sections if s.title_path]
+    out = {
         "span_in_top1": 1.0 if span_top1 else 0.0,
         "span_in_any": 1.0 if span_any else 0.0,
-        "path_correct_top1": 1.0 if path_top1 else 0.0,
-        "near_miss_rate": near / len(sections),
+        "path_coverage": len(with_path) / len(sections),
+        "gold_has_path": 1.0 if gold_has_path else 0.0,
     }
+    if gold_has_path and top1.title_path:
+        out["path_correct_top1"] = 1.0 if any(
+            g.title_path and path_matches(g.title_path, top1.title_path) for g in golds
+        ) else 0.0
+    if gold_has_path and with_path:
+        # Over units that carry a path: a unit with none cannot be a sibling.
+        out["near_miss_rate"] = sum(1 for s in with_path if is_sibling_near_miss(s, golds)) / len(with_path)
+    return out
 
 
 def abstention_metrics(

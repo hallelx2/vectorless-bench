@@ -59,13 +59,14 @@ def test_near_miss_metric():
 
 
 def test_path_correct_is_structural_only():
-    # A chunk system matches the span but has NO path -> path_correct must be 0,
-    # even though it found the answer text. This is the structural differentiator.
+    # A chunk system matches the span but has NO path -> path_correct is not
+    # measurable for it (absent, reported n/a), never a zero that reads as a
+    # score. A structural system is scored.
     gold = [GoldAnchor(doc_id="d", title_path=["Item 8"], answer_spans=["13.8%"])]
     chunk = [RetrievedSection(content="CET1 was 13.8%")]  # no title_path
     structural = [RetrievedSection(content="CET1 was 13.8%", title_path=["Part II", "Item 8"])]
     assert citation_metrics(chunk, gold)["span_in_top1"] == 1.0
-    assert citation_metrics(chunk, gold)["path_correct_top1"] == 0.0
+    assert "path_correct_top1" not in citation_metrics(chunk, gold)
     assert citation_metrics(structural, gold)["path_correct_top1"] == 1.0
 
 

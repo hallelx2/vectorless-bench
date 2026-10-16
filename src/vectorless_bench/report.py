@@ -62,8 +62,11 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 by_q[r["qid"]].append(r.get("selected_ids", []))
         det = [aggregate.determinism(v) for v in by_q.values() if len(v) > 1]
 
-        def avg_metric(name: str) -> float:
-            return _mean([r["metrics"].get(name, 0.0) for r in ok if name in r["metrics"]])
+        def avg_metric(name: str):
+            vals = [r["metrics"][name] for r in ok if name in r["metrics"]]
+            # None, not 0.0, when no row measured it: "unmeasured" and "zero"
+            # are different findings.
+            return _mean(vals) if vals else None
 
         results[system] = {
             "n": len(ok),
@@ -82,6 +85,8 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 "span_in_top1": avg_metric("span_in_top1"),
                 "path_correct_top1": avg_metric("path_correct_top1"),
                 "near_miss_rate": avg_metric("near_miss_rate"),
+                "path_coverage": avg_metric("path_coverage"),
+                "gold_has_path": avg_metric("gold_has_path"),
             },
             "abstention": {
                 "abstained": avg_metric("abstained"),
@@ -114,6 +119,22 @@ def _fmt(x: Any, p: int = 3) -> str:
         return f"{x:.{p}f}"
     return str(x)
 
+
+
+def _path_cells(c: dict) -> tuple:
+    """Table cells for path_correct_top1 and near_miss_rate. A value is shown
+    only where it was measured; otherwise the cell says why not: an older run
+    that never recorded gold paths, a corpus with none, or a system that
+    returns no paths (chunk systems)."""
+    gold = c.get("gold_has_path")
+    if gold is None:
+        why = "unknown (run predates gold_has_path)"
+    elif not gold:
+        why = "n/a (no gold paths)"
+    else:
+        why = "n/a (no paths returned)"
+    pc, nm = c.get("path_correct_top1"), c.get("near_miss_rate")
+    return (_fmt(pc) if pc is not None else why, _fmt(nm) if nm is not None else why)
 
 def write_reports(run_dir: Path, k: int) -> Dict[str, Any]:
     results = summarize(run_dir, k)
@@ -173,13 +194,22 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
     lines.append("`near_miss_rate` is the share of returned sections that are a "
                  "*sibling* of the right one (right neighbourhood, wrong leaf) — the "
                  "vector-RAG failure Vectorless is built to avoid. Lower is better.\n")
-    lines.append("| System | span_in_top1 | path_correct_top1 | near_miss_rate | abstained(no-answer) |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("`path_coverage` is the share of returned units that carried a "
+                 "heading path at all. The two path metrics are **undefined, not "
+                 "zero**, when either side lacks paths: the system returned none "
+                 "(coverage 0), or the DATASET has no gold heading paths at all — "
+                 "FinanceBench ships evidence text and pages only, so "
+                 "`path_correct_top1` there is 0.000 for every system including a "
+                 "perfect one. Those cells print `n/a`, and a `n/a (no gold paths)` "
+                 "note means the claim cannot be made from this corpus.\n")
+    lines.append("| System | span_in_top1 | path_correct_top1 | near_miss_rate | path_coverage | abstained(no-answer) |")
+    lines.append("|---|---|---|---|---|---|")
     for s, r in _sorted(results):
         c = r["citation"]
+        path_cell, near_cell = _path_cells(c)
         lines.append(
-            f"| {s} | {_fmt(c['span_in_top1'])} | {_fmt(c['path_correct_top1'])} | "
-            f"{_fmt(c['near_miss_rate'])} | {_fmt(r['abstention']['abstained'])} |"
+            f"| {s} | {_fmt(c['span_in_top1'])} | {path_cell} | "
+            f"{near_cell} | {_fmt(c.get('path_coverage'))} | {_fmt(r['abstention']['abstained'])} |"
         )
 
     lines.append("\n## Determinism & ingest cost\n")
@@ -231,6 +261,7 @@ tr:hover td{background:#11151f}
 .sys{font-weight:600;color:#fff}
 .best{color:#46d39a;font-weight:600}
 .bad{color:#f0816b}
+.na{color:#8a8f98;font-style:italic}
 .card{background:#10141d;border:1px solid #1c2230;border-radius:12px;padding:18px 20px;margin-top:10px}
 .note{font-size:12px;color:#727b8f;margin-top:24px;border-top:1px solid #1c2230;padding-top:12px}
 svg{background:#0e121b;border:1px solid #1c2230;border-radius:12px}
@@ -315,14 +346,19 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
          (f"precision@{k}", f"recall@{k}", f"f1@{k}", f"ndcg@{k}", "mrr", f"hit@{k}")]
         for s, r in sd
     ]
-    cite_rows = [
-        [(s, "sys"),
-         (_fmt(r["citation"]["span_in_top1"]), ""),
-         (_fmt(r["citation"]["path_correct_top1"]), ""),
-         (_fmt(r["citation"]["near_miss_rate"]), "bad" if r["citation"]["near_miss_rate"] > 0.1 else ""),
-         (_fmt(r["abstention"]["abstained"]), "")]
-        for s, r in sd
-    ]
+    def _cite_row(s, r):
+        c = r["citation"]
+        cov = c.get("path_coverage") or 0.0
+        pc, nm = _path_cells(c)
+        measured_pc = c.get("path_correct_top1") is not None
+        measured_nm = c.get("near_miss_rate") is not None
+        path_cell = (pc, "" if measured_pc else "na")
+        near_cell = (nm, ("bad" if c["near_miss_rate"] > 0.1 else "") if measured_nm else "na")
+        return [(s, "sys"), (_fmt(c["span_in_top1"]), ""), path_cell, near_cell,
+                (_fmt(cov), "bad" if 0 < cov < 0.5 else ""),
+                (_fmt(r["abstention"]["abstained"]), "")]
+
+    cite_rows = [_cite_row(s, r) for s, r in sd]
     det_rows = [
         [(s, "sys"),
          (_fmt(r["determinism"]["exact_match"]), ""),
@@ -343,8 +379,8 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
 <h2>Retrieval quality</h2>
 {_html_table(["System",f"P@{k}",f"R@{k}",f"F1@{k}",f"nDCG@{k}","MRR",f"hit@{k}"], qual_rows)}
 <h2>Citation exactness &amp; near-miss</h2>
-<div class="sub">near-miss = retrieved a sibling of the right section (the vector failure mode). Lower is better; chunk systems score 0 on path-correctness by construction.</div>
-{_html_table(["System","span_in_top1","path_correct@1","near_miss","abstained(no-ans)"], cite_rows)}
+<div class="sub">near-miss = retrieved a sibling of the right section (the vector failure mode). Lower is better; path metrics read n/a where they cannot be measured (no gold path, or a system that returns no paths).</div>
+{_html_table(["System","span_in_top1","path_correct@1","near_miss","path_coverage","abstained(no-ans)"], cite_rows)}
 <h2>Determinism &amp; ingest cost</h2>
 {_html_table(["System","exact_match","mean_jaccard","ingest s","ingest $"], det_rows)}
 <div class="note">Quality/cost/latency from the first repeat; determinism across all repeats. Costs use the engine's price book — see manifest.json.</div>

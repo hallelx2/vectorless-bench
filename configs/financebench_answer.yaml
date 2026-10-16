@@ -1,0 +1,55 @@
+# FinanceBench, ANSWER-ACCURACY axis — the axis the field reports
+# (PatronusAI's published baselines; PageIndex/Mafin 2.5 report 98.7%, a
+# figure whose grading method is not published: a later re-evaluation got
+# 98.7% only after human re-grading, 90.7% on strict matching to the gold
+# answers). Numbers here compare to those only when the grading method
+# matches. Retrieval numbers are in financebench_jev.yaml.
+#
+# The distinction matters and must survive into anything buyer-facing:
+#   financebench_jev.yaml  scores RETRIEVAL  — did the returned units contain
+#                          the gold evidence (F1@5, hit@5, span-in-top-1)?
+#   this config            scores ANSWERS    — generate from ONLY the retrieved
+#                          context, then grade against FinanceBench's gold
+#                          answer. hit@5 is a retrieval diagnostic, not a
+#                          ceiling: an answer can be right from other
+#                          retrieved evidence even when the gold page is missed.
+#
+# The judge is blind to which system produced an answer, grades against the
+# dataset's gold answer rather than its own knowledge, and its spend is
+# reported separately as judge_usd so it never contaminates system cost.
+# Judging runs on repeat 0 only, so it does not scale with the determinism axis.
+#
+#   VECTORLESS_BASE_URL=http://localhost:7654 vlbench run --config configs/financebench_answer.yaml
+dataset: financebench
+dataset_params:
+  docs_dir: data/financebench/docs
+
+systems:
+  - vectorless
+  - vector_rag
+  - bm25
+
+k: 5
+repeats: 1            # determinism is measured by financebench_jev.yaml; one pass is enough here
+cold: true
+limit: 150
+sample_seed: 0
+out_dir: runs
+
+model: gemini-2.5-flash
+embedding_model: gemini-embedding-2
+
+judge: true
+gen_model: gemini-2.5-flash      # the answerer: swap this to compare models on identical retrieved context
+judge_model: gpt-4o              # the grader: hold this FIXED across runs or the numbers stop comparing
+
+system_params:
+  vectorless:
+    server_cache_disabled: true
+    ingest_timeout: 2400
+    query_timeout: 300
+  vector_rag:
+    backend: memory
+    embedding_model: BAAI/bge-small-en-v1.5
+    chunk_tokens: 512
+    overlap_tokens: 64
