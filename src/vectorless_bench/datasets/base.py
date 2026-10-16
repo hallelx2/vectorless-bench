@@ -53,6 +53,13 @@ class Dataset(ABC):
         return out[:limit]
 
 
+DATASETS = ["fixtures", "financebench"]
+
+
+def available() -> List[str]:
+    return list(DATASETS)
+
+
 def build_dataset(name: str, **cfg) -> Dataset:
     if name in ("fixtures", "mini"):
         from .fixtures import FixturesDataset

@@ -158,6 +158,18 @@ class RunRecord:
     strategy: str = ""
     cold: bool = True
     error: Optional[str] = None
+    # How the sample was measured (HAL-3032). latency_ms is the harness's own
+    # wall clock around retrieve(), the same boundary for every system;
+    # reported_ms is what the system said about itself, if anything.
+    phase: str = "latency"
+    wall_ms: Optional[float] = None
+    reported_ms: Optional[float] = None
+    # The engine's split of the request (Vectorless only): engine_ms vs waits.
+    timing: Optional[Dict[str, Any]] = None
+    # Host evidence from every machine in the interval, and its verdict.
+    host: Dict[str, Any] = field(default_factory=dict)
+    flagged: bool = False
+    attempts: int = 1
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

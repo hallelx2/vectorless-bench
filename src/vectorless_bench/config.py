@@ -33,6 +33,17 @@ class RunConfig:
     judge_model: str = "gemini-2.5-flash-lite"  # HAL-3047 moves grading to Jev
     gen_model: str = "gemini-2.5-flash-lite"  # answer generator for the judge axis
 
+    # How the run is timed (HAL-3032). "latency": one question at a time, every
+    # sample bracketed by host evidence and rerun if the machine was busy.
+    # "throughput": `concurrency` questions in flight, reported separately.
+    phase: str = "latency"
+    concurrency: int = 1
+    # Speed rig settings (see rig.RigConfig): probe agent URLs per remote host,
+    # steal / foreign-process thresholds, reruns, provider RTT targets.
+    rig: Dict[str, Any] = field(default_factory=dict)
+    # Stop the run once recorded spend reaches this many USD (None: no cap).
+    max_spend_usd: Optional[float] = None
+
     # dataset-specific options (e.g. docs_dir for financebench)
     dataset_params: Dict[str, Any] = field(default_factory=dict)
     # per-system overrides, keyed by system name
@@ -68,6 +79,10 @@ def validate(cfg: "RunConfig") -> None:
         for k, v in params.items():
             if isinstance(v, str) and (k == "model" or k.endswith("_model")) and v:
                 named[f"system_params.{system}.{k}"] = v
+    if cfg.phase not in ("latency", "throughput"):
+        raise ValueError(f"phase must be latency or throughput, got {cfg.phase!r}")
+    if cfg.phase == "throughput" and cfg.concurrency < 1:
+        raise ValueError("throughput needs concurrency >= 1")
     bad = {k: v for k, v in named.items() if not _is_vertex_or_local(v)}
     if bad:
         raise ValueError(

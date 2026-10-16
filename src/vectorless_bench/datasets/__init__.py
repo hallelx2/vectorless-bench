@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .base import Dataset, build_dataset
+from .base import available, Dataset, build_dataset
 
 __all__ = ["Dataset", "build_dataset"]

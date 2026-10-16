@@ -113,7 +113,11 @@ class VectorlessRetriever:
         # A Judge-navigated query is a few requests to a provider whose
         # latency swings between seconds and a minute; the SDK's default
         # 30 s would time out the slow half and score them as errors.
-        self._client = VectorlessClient(api_key=api_key, base_url=base_url, timeout=query_timeout)
+        # max_retries=0: a retried request would hide a failure inside a
+        # latency figure. A failure is recorded as a failure.
+        self._client = VectorlessClient(api_key=api_key, base_url=base_url, timeout=query_timeout,
+                                        max_retries=0)
+        self.engine_version = None
         self.model = model
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
@@ -127,6 +131,13 @@ class VectorlessRetriever:
     # -- lifecycle ---------------------------------------------------------
     def setup(self, corpus: List[Doc]) -> None:
         import time
+
+        # Name the build being measured (HAL-1582 / HAL-3067).
+        try:
+            v = self._client.version()
+            self.engine_version = {"version": getattr(v, "version", None) or str(v)}
+        except Exception as e:  # pragma: no cover - network
+            self.engine_version = {"version": None, "error": str(e)}
 
         t0 = time.perf_counter()
         for d in corpus:
@@ -313,6 +324,8 @@ class VectorlessRetriever:
                 # understated and must not be read as a quality signal.
                 "units_without_path": unresolved,
                 "ambiguous_titles": path_index.ambiguous_titles,
+                # The engine's own split (engine >= 2026-10-16, SDK with Timing).
+                "timing": _dump(getattr(resp, "timing", None)),
             },
         )
 
@@ -332,3 +345,12 @@ class VectorlessRetriever:
             cost_usd=cost,
             llm_calls=int(getattr(u, "llm_calls", 1) or 1),
         )
+
+
+def _dump(obj: object):
+    """A pydantic model as a plain dict, or None."""
+    if obj is None:
+        return None
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return dict(obj) if isinstance(obj, dict) else None
