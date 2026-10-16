@@ -22,6 +22,14 @@ Two engine-specific details handled here:
    manifest will carry a warning. We do NOT salt queries by default because that
    changes the model's input and contaminates the comparison.
 
+3. A corpus-level question (MultiHop-RAG: the evidence is in 2-4 of 609
+   articles and nobody says which) goes to the engine's corpus mode,
+   `query_corpus`, over EVERY document this run ingested. The question's
+   own gold document ids are never passed: they would tell the engine where
+   the answer is. The merged evidence pages come back tagged with their
+   engine document, which is mapped back to the dataset's id; coverage, the
+   hops and the documents read are kept in the trace.
+
 Cost comes straight from the engine's `usage` field (already priced with the
 same table), so Vectorless numbers need no re-estimation.
 """
@@ -32,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from ..datasets.base import CORPUS
 from ..pricing import compute
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
@@ -100,6 +109,7 @@ class VectorlessRetriever:
         server_cache_disabled: bool = False,
         ingest_timeout: float = 600.0,
         query_timeout: float = 300.0,
+        max_hops: Optional[int] = None,
         **_: object,
     ) -> None:
         try:
@@ -121,6 +131,7 @@ class VectorlessRetriever:
         self.model = model
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
+        self.max_hops = max_hops  # corpus mode only; None takes the engine's default (3)
         self.server_cache_disabled = server_cache_disabled
         self.ingest_timeout = ingest_timeout
         self.setup_seconds = 0.0
@@ -258,6 +269,8 @@ class VectorlessRetriever:
 
     # -- query -------------------------------------------------------------
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
+        if question.doc_id == CORPUS:
+            return self._retrieve_corpus(question, k, cold)
         server_doc = self._doc_ids.get(question.doc_id)
         if server_doc is None:
             return RetrievalResult(
@@ -325,6 +338,55 @@ class VectorlessRetriever:
                 "units_without_path": unresolved,
                 "ambiguous_titles": path_index.ambiguous_titles,
                 # The engine's own split (engine >= 2026-10-16, SDK with Timing).
+                "timing": _dump(getattr(resp, "timing", None)),
+            },
+        )
+
+    def _retrieve_corpus(self, question: Question, k: int, cold: bool) -> RetrievalResult:
+        """A question over the whole collection, through corpus mode."""
+        if not self._doc_ids:
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question,
+                                   error="no documents were ingested", cold=cold)
+        logical = {v: k_ for k_, v in self._doc_ids.items()}
+        try:
+            resp = self._client.query_corpus(
+                question.question,
+                document_ids=list(self._doc_ids.values()),
+                max_evidence=k,
+                max_hops=self.max_hops,
+            )
+        except Exception as e:  # pragma: no cover - network
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question,
+                                   error=str(e), cold=cold)
+        sections: List[RetrievedSection] = []
+        for ev in resp.evidence or []:
+            doc = logical.get(ev.document_id, ev.document_id)
+            sections.append(RetrievedSection(
+                content=ev.text or "",
+                section_id=f"{doc}#p{ev.page}",
+                title=ev.document_title or ev.section_title or doc,
+                page=ev.page or None,
+                score=ev.confidence,
+            ))
+        read = [logical.get(d, d) for h in (resp.hops or []) for d in (h.read or [])]
+        return RetrievalResult(
+            qid=question.qid,
+            system=self.name,
+            query=question.question,
+            sections=sections,
+            usage=self._usage_from(resp),
+            latency_ms=float(resp.elapsed_ms or 0),
+            strategy=resp.strategy or "corpus",
+            cold=cold,
+            trace={
+                "server_cache_disabled": self.server_cache_disabled,
+                "mode": "corpus",
+                "coverage": resp.coverage,
+                "hops": len(resp.hops or []),
+                "documents_considered": resp.documents_considered,
+                "documents_read": read,
+                "judge_requests": resp.judge_requests,
+                "errors": dict(resp.errors or {}),
                 "timing": _dump(getattr(resp, "timing", None)),
             },
         )

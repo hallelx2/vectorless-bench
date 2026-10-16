@@ -146,3 +146,40 @@ def test_system_without_paths_is_distinguishable_from_a_wrong_path():
     m = citation_metrics([_sec([], "x")], gold)   # a chunk system
     assert m["gold_has_path"] == 1.0              # the corpus could score it
     assert m["path_coverage"] == 0.0              # the system could not be scored
+
+
+def test_corpus_question_goes_to_corpus_mode_without_its_gold_documents():
+    """A MultiHop question is asked over every ingested document; the gold
+    document ids (which say where the answer is) are never sent."""
+    from types import SimpleNamespace as NS
+
+    from vectorless_bench.datasets.base import CORPUS
+    from vectorless_bench.retrievers.vectorless import VectorlessRetriever
+    from vectorless_bench.schema import Question
+
+    sent = {}
+
+    class _Client:
+        def query_corpus(self, query, **kw):
+            sent.update(kw, query=query)
+            return NS(
+                evidence=[NS(document_id="srv_b", document_title="BizWire", section_title="", page=1,
+                             text="Acme revenue was 10 billion", confidence=0.93, hop=1)],
+                hops=[NS(read=["srv_b", "srv_a"])], coverage=0.81, documents_considered=3,
+                judge_requests=7, errors=None, strategy="corpus", elapsed_ms=4100, timing=None,
+                usage=NS(input_tokens=1000, output_tokens=0, total_tokens=1000, cost_usd=0.00004, llm_calls=7),
+            )
+
+    r = VectorlessRetriever.__new__(VectorlessRetriever)
+    r.name, r._client, r.max_hops, r.server_cache_disabled = "vectorless", _Client(), 2, True
+    r._doc_ids = {"a": "srv_a", "b": "srv_b", "c": "srv_c"}
+    q = Question(qid="q1", doc_id=CORPUS, question="Did both outlets report 10 billion?",
+                 meta={"doc_ids": ["a", "b"]})
+    res = r.retrieve(q, k=5)
+
+    assert sorted(sent["document_ids"]) == ["srv_a", "srv_b", "srv_c"], "every ingested document, not the gold ones"
+    assert sent["max_evidence"] == 5 and sent["max_hops"] == 2
+    assert res.error is None and res.sections[0].section_id == "b#p1" and res.sections[0].score == 0.93
+    assert res.trace["mode"] == "corpus" and res.trace["coverage"] == 0.81
+    assert res.trace["documents_read"] == ["b", "a"]
+    assert res.usage.cost_usd == 0.00004 and res.latency_ms == 4100.0
