@@ -360,3 +360,27 @@ def test_a_chunk_offset_points_at_its_own_text():
     text = "  lead space.\n\n   " + " ".join(f"w{i}" for i in range(2000))
     for c in chunk_doc(Doc(doc_id="d", title="d", content=text), 100, 10):
         assert text[c.start:c.start + len(c.text)] == c.text
+
+
+def test_pgvector_loads_text_with_nul_bytes_and_returns_the_original(monkeypatch):
+    """PDF extraction leaves NUL bytes Postgres text refuses (the pilot's
+    FinanceBench setup failed on them). Runs against the bench VM's pgvector."""
+    import os
+    import pytest
+    from vectorless_bench.retrievers.vector_rag import VectorRagRetriever
+
+    dsn = os.environ.get("VLBENCH_PG_DSN")
+    if not dsn:
+        pytest.skip("needs VLBENCH_PG_DSN (the bench VM's pgvector)")
+    monkeypatch.setattr(VectorRagRetriever, "_embed",
+                        lambda self, texts: [[1.0 if "capex" in t else 0.0, 1.0] for t in texts])
+    monkeypatch.setenv("VLBENCH_EMBED_CACHE", str(__import__("tempfile").mkdtemp()))
+    r = VectorRagRetriever(embedding_model="test/nul-model", backend="pgvector", dsn=dsn,
+                           chunk_tokens=50, overlap_tokens=0)
+    try:
+        r.setup([Doc(doc_id="d", title="d", content="capex\x00 was 1,577 million")])
+        out = r.retrieve(Question(qid="q", doc_id="d", question="capex"), k=1)
+        assert out.error is None and out.sections[0].content == "capex\x00 was 1,577 million"
+    finally:
+        r.teardown()
+
