@@ -203,6 +203,8 @@ class FullContextRetriever:
             sections=sections, usage=out.usage, latency_ms=(time.perf_counter() - t0) * 1000.0,
             strategy="full-context" + ("-pdf" if self.pdf_input else ""), cold=cold,
             trace={"model": self.model, "doc_tokens": ntok, "cached": bool(cache)},
+            # The ceiling answers from everything it read, not from its quotes.
+            answer_parts=[self._doc_part(doc)],
         )
 
     def _parse(self, text: str) -> List[RetrievedSection]:

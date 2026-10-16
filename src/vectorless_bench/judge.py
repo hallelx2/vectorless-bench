@@ -34,7 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from ._llm import complete
 from .schema import Question, RetrievedSection, Usage
@@ -91,10 +91,22 @@ class Judge:
 
             self._jev = Jev(model=judge_model)
 
-    def evaluate(self, question: Question, sections: Sequence[RetrievedSection]) -> JudgeResult:
+    def evaluate(self, question: Question, sections: Sequence[RetrievedSection],
+                 answer_parts: Optional[List[Any]] = None) -> JudgeResult:
         usage = Usage()
-        context = "\n\n---\n\n".join(s.content for s in sections) or "(no context)"
-        gen = complete(self.gen_model, _GEN_SYSTEM, f"CONTEXT:\n{context}\n\nQUESTION: {question.question}", max_tokens=400)
+        if answer_parts:
+            # the system's own context (full context: the whole document it read)
+            from google.genai import types  # type: ignore
+
+            from ._llm import generate
+
+            parts = list(answer_parts) + [types.Part(text=f"QUESTION: {question.question}")]
+            gen = generate(self.gen_model, system=_GEN_SYSTEM, contents=[types.Content(role="user", parts=parts)],
+                           max_tokens=400)
+        else:
+            context = "\n\n---\n\n".join(s.content for s in sections) or "(no context)"
+            gen = complete(self.gen_model, _GEN_SYSTEM, f"CONTEXT:\n{context}\n\nQUESTION: {question.question}",
+                           max_tokens=400)
         usage.add(gen.usage)
         candidate = gen.text.strip()
         declined = candidate.upper().startswith("INSUFFICIENT")

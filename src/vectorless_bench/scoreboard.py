@@ -138,6 +138,7 @@ def row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
         "native_metric": native_label.format(k=k) if native_label else None,
         "native": native,
         "answer_accuracy": _num(_get(r, "answer", "accuracy")),
+        "answer_declined": _num(_get(r, "answer", "abstained")),
         "abstained": _num(_get(r, "abstention", "abstained")),
         "usd_per_question": _num(_get(r, "cost", "mean_cost_usd")),
         "usd_per_correct": _num(_get(r, "cost", "cost_per_correct_usd")),
@@ -206,7 +207,8 @@ def _markdown(board: Dict[str, Dict[str, Dict[str, Any]]], rows: List[Dict[str, 
                  "question with no answer, whether the system abstained), with a 95% bootstrap interval. "
                  "Reachable restricts it to questions whose evidence exists in the extracted "
                  "text. Graded answer accuracy grades an answer written by the same model, from each system's "
-                 "units only. Cost is the system's own spend per question; grading is reported apart. Latency "
+                 "units only (full context answers from the whole document it read, as a ceiling should); "
+                 "Declined is the share where that model said the units were not enough. Cost is the system's own spend per question; grading is reported apart. Latency "
                  "is from the isolated pass, with contended samples rerun.")
     lines.append("")
     for ds in sorted(board):
@@ -217,14 +219,15 @@ def _markdown(board: Dict[str, Dict[str, Dict[str, Any]]], rows: List[Dict[str, 
         lines.append(f"## {ds}")
         lines.append("")
         head = ["System", "n", "Quality (95% CI)", "Reachable"] + ([native] if native else []) + [
-            "Graded answer accuracy", "$ / question", "p50", "p95", "q/min", "Context tokens"]
+            "Graded answer accuracy", "Declined", "$ / question", "p50", "p95", "q/min", "Context tokens"]
         lines.append("| " + " | ".join(head) + " |")
         lines.append("|" + "---|" * len(head))
         for r in ds_rows:
             ci = f"{_fmt(r['quality'])} ({_fmt(r['quality_lo'])}–{_fmt(r['quality_hi'])})" if r["quality"] is not None else "—"
             cells = [r["label"], str(r["n"]), ci, _fmt(r["reachable_quality"])] + (
                 [_fmt(r["native"])] if native else []) + [
-                _fmt(r["answer_accuracy"]), _usd(r["usd_per_question"]), _ms(r["p50_ms"]), _ms(r["p95_ms"]),
+                _fmt(r["answer_accuracy"]), _fmt(r["answer_declined"]), _usd(r["usd_per_question"]),
+                _ms(r["p50_ms"]), _ms(r["p95_ms"]),
                 _fmt(r["questions_per_minute"], 1), _fmt(r["context_tokens"], 0)]
             lines.append("| " + " | ".join(cells) + " |")
         na = [r for r in ds_rows if r.get("not_applicable")]

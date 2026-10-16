@@ -165,7 +165,7 @@ def test_a_failed_grading_is_recorded_and_the_run_goes_on():
             return RetrievalResult(qid=q.qid, system="x", query=q.question, sections=[RetrievedSection(content="a")])
 
     class _Judge:
-        def evaluate(self, q, sections):
+        def evaluate(self, q, sections, answer_parts=None):
             raise RuntimeError("jev: no answer for 'verdict'")
 
     q = Question(qid="q", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", answer_spans=["a"])], answer="a")
