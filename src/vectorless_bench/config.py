@@ -97,5 +97,9 @@ def load_config(path: str) -> RunConfig:
 
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     known = RunConfig().__dict__.keys()
-    kwargs = {k: v for k, v in data.items() if k in known}
-    return RunConfig(**kwargs)
+    unknown = sorted(set(data) - set(known))
+    if unknown:
+        # A misspelt key (max_spend for max_spend_usd) used to be dropped in
+        # silence, and the run went ahead without the setting.
+        raise ValueError(f"{path}: unknown config keys {unknown}; known keys are {sorted(known)}")
+    return RunConfig(**data)

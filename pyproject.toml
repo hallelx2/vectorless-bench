@@ -24,7 +24,7 @@ vector = ["google-genai>=1.30", "psycopg[binary]>=3.1", "pgvector>=0.3", "senten
 # the BM25 baseline
 bm25 = ["rank-bm25>=0.2.2"]
 # the system under test
-vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@42b1db56fdea540192ce76f1ce66c6b0ad55562e#subdirectory=python"]
+vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@ac879239af1a26eaf1cd4f52f7104641317921df#subdirectory=python"]
 # public datasets (FinanceBench) + PDF extraction for the downloader
 data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31", "pyarrow>=15"]
 # rival systems that run their own published code
@@ -35,7 +35,7 @@ viz = ["matplotlib>=3.8"]
 all = [
   "google-genai>=1.30", "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
-  "vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@42b1db56fdea540192ce76f1ce66c6b0ad55562e#subdirectory=python", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31", "pyarrow>=15",
+  "vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@ac879239af1a26eaf1cd4f52f7104641317921df#subdirectory=python", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31", "pyarrow>=15",
   "matplotlib>=3.8", "pageindex>=0.4", "litellm>=1.60", "faiss-cpu>=1.8", "umap-learn>=0.5", "tenacity>=8", "tiktoken>=0.7", "openai>=1.40", "transformers>=4.38",
 ]
 dev = ["pytest>=8.0"]
