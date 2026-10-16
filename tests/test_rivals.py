@@ -214,3 +214,48 @@ def test_pageindex_times_retrieval_to_the_first_answer_token(monkeypatch):
     assert res.trace["total_ms"] >= res.trace["retrieval_ms"] and abs(res.latency_ms - res.trace["retrieval_ms"]) < 0.1
     assert res.usage.llm_calls == 2 and res.trace["llm_calls"] == 3, "the answer call is kept apart"
     assert res.trace["answer_cost_usd"] > 0
+
+
+def test_pageindex_usage_is_charged_per_call_even_late_and_concurrent():
+    import threading
+    import time as _t
+    from vectorless_bench.retrievers import pageindex as pi
+    from vectorless_bench.schema import Usage
+
+    sink = pi._UsageSink()
+    a, b = Usage(), Usage()
+
+    def operation(target, call_id, delay):
+        token = sink.enter(target)
+        sink.begin(call_id)  # the pre-call hook, on the caller's thread
+
+        def late():  # LiteLLM's success callback, on a background thread
+            _t.sleep(delay)
+            sink.add("vertex_ai/gemini-3.5-flash-lite", 100, 10, 0, 0.5, call_id=call_id)
+
+        threading.Thread(target=late).start()
+        assert sink.exit(target, token), "exit waits for the call to report"
+
+    ta = threading.Thread(target=operation, args=(a, "call-a", 0.05))
+    tb = threading.Thread(target=operation, args=(b, "call-b", 0.01))
+    ta.start(); tb.start(); ta.join(); tb.join()
+    assert a.llm_calls == 1 and b.llm_calls == 1, (a, b)
+    assert sink.orphans == 0
+
+
+def test_pageindex_does_not_sleep_after_the_last_attempt(monkeypatch):
+    from vectorless_bench.retrievers import pageindex as pi
+
+    assert pi._rate_limited(type("E", (Exception,), {"status_code": 429})())
+    assert not pi._rate_limited(type("E", (Exception,), {"status_code": 400})("tokens 429 in text"))
+    assert pi._rate_limited(Exception("RESOURCE_EXHAUSTED: quota"))
+
+
+def test_pageindex_reports_corpus_questions_as_not_applicable():
+    from vectorless_bench.datasets.base import CORPUS
+    from vectorless_bench.retrievers import pageindex as pi
+
+    r = pi.PageIndexRetriever.__new__(pi.PageIndexRetriever)
+    r._doc_ids = {}
+    res = r.retrieve(Question(qid="q", doc_id=CORPUS, question="?"), k=5)
+    assert res.error.startswith("n/a:")
