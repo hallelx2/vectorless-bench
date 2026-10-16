@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .._llm import DEFAULT_MODEL, complete, genai_client, require_vertex_model
+from .._llm import DEFAULT_MODEL, _busy, complete_patient, genai_client, require_vertex_model
 from ..datasets.base import CORPUS
 from ..pricing import compute_embedding, count_tokens
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
@@ -38,6 +38,22 @@ def _ensure_repo() -> str:
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
     return str(path)
+
+
+def _embed_patient(call, attempts: int = 8):
+    """An embedding call retried on a load refusal with growing pauses, the
+    way the summaries are (complete_patient): one refused embedding used to
+    fail the filing it belonged to."""
+    delay = 2.0
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as e:  # pragma: no cover - network
+            if not _busy(e) or attempt == attempts:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 120.0)
+    raise RuntimeError("unreachable")
 
 
 class RaptorRetriever:
@@ -65,7 +81,7 @@ class RaptorRetriever:
 
         class GeminiSummary(BaseSummarizationModel):
             def summarize(self, context, max_tokens=150):
-                out = complete(outer.model, "Write a summary of the following, including as many key details as possible.",
+                out = complete_patient(outer.model, "Write a summary of the following, including as many key details as possible.",
                                context, max_tokens=max_tokens)
                 with outer._lock:
                     outer.setup_usage.add(out.usage)
@@ -75,8 +91,9 @@ class RaptorRetriever:
             def create_embedding(self, text):
                 from google.genai import types  # type: ignore
 
-                r = genai_client().models.embed_content(model=outer.embedding_model, contents=text,
-                                                        config=types.EmbedContentConfig(output_dimensionality=768))
+                r = _embed_patient(lambda: genai_client().models.embed_content(
+                    model=outer.embedding_model, contents=text,
+                    config=types.EmbedContentConfig(output_dimensionality=768)))
                 toks = count_tokens(text)
                 with outer._lock:
                     target = getattr(outer._target, "usage", None) or outer.setup_usage
