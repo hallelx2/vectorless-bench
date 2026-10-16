@@ -46,6 +46,11 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
     results: Dict[str, Any] = {}
     for system, rows in by_system.items():
         first = [r for r in rows if r["repeat"] == 0]
+        # "n/a:" marks a question the system cannot be asked (a corpus past
+        # its window): counted apart, neither a failure nor a zero.
+        not_applicable = sum(1 for r in first if str(r.get("error") or "").startswith("n/a:"))
+        first = [r for r in first if not str(r.get("error") or "").startswith("n/a:")]
+        rows = [r for r in rows if not str(r.get("error") or "").startswith("n/a:")]
         ok = [r for r in first if not r.get("error")]
         errors = sum(1 for r in first if r.get("error"))
 
@@ -79,6 +84,7 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
         results[system] = {
             "n": len(ok),
             "errors": errors,
+            "not_applicable": not_applicable,
             "quality": {
                 "primary": _mean(qualities),
                 "primary_ci": aggregate.bootstrap_ci(qualities),

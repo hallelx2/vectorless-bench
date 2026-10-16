@@ -30,10 +30,20 @@ from typing import Any, Dict, List, Optional
 from .pricing import compute
 from .schema import Usage
 
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"  # HAL-3048: 2.5 Flash-Lite is refused by Vertex shared capacity at benchmark pace
 
 _client = None
 _client_lock = threading.Lock()
+
+# Gemini 2.x/3.x text models on Vertex run on Dynamic Shared Quota: no
+# per-project limit to raise, and 429 RESOURCE_EXHAUSTED when the shared pool
+# is busy (measured 2026-10-16: 2.5 Flash-Lite refused 46 of 48 calls at 16
+# in flight; 3.5 Flash-Lite took 16 cleanly, 32 with 8 of 96 refused). One
+# gate bounds calls in flight across every system in the process, and a
+# refused call is retried with jittered backoff. Retries are counted on the
+# completion so latency the provider caused is visible in the record.
+_GATE = threading.BoundedSemaphore(int(os.environ.get("VLBENCH_LLM_CONCURRENCY", "8")))
+_MAX_RETRIES = int(os.environ.get("VLBENCH_LLM_RETRIES", "6"))
 
 
 def project() -> str:
@@ -83,6 +93,10 @@ class Completion:
     usage: Usage
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
+    # The model's turn exactly as returned; a tool loop appends it to the
+    # conversation unchanged (it carries Gemini 3's thought signatures).
+    raw_content: Any = None
+    retries: int = 0
 
 
 def usage_from(model: str, um: Any) -> Usage:
@@ -158,15 +172,34 @@ def generate(
     if cached_content:
         cfg["cached_content"] = cached_content
 
-    r = genai_client().models.generate_content(
-        model=model, contents=contents, config=types.GenerateContentConfig(**cfg)
-    )
+    import random
+    import time as _time
+
+    retries = 0
+    delay = 1.0
+    while True:
+        try:
+            with _GATE:
+                r = genai_client().models.generate_content(
+                    model=model, contents=contents, config=types.GenerateContentConfig(**cfg)
+                )
+            break
+        except Exception as e:
+            msg = str(e)
+            busy = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg
+            if not busy or retries >= _MAX_RETRIES:
+                raise
+            retries += 1
+            _time.sleep(delay * (0.5 + random.random()))
+            delay = min(delay * 2, 30.0)
     calls: List[Dict[str, Any]] = []
     text_parts: List[str] = []
     finish = ""
+    raw = None
     if r.candidates:
         cand = r.candidates[0]
         finish = str(getattr(cand, "finish_reason", "") or "")
+        raw = cand.content
         for p in (cand.content.parts if cand.content and cand.content.parts else []):
             if getattr(p, "function_call", None) is not None:
                 calls.append({"name": p.function_call.name, "args": dict(p.function_call.args or {}), "part": p})
@@ -177,6 +210,8 @@ def generate(
         usage=usage_from(model, getattr(r, "usage_metadata", None)),
         tool_calls=calls,
         finish_reason=finish,
+        raw_content=raw,
+        retries=retries,
     )
 
 

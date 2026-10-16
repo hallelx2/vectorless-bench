@@ -134,7 +134,11 @@ class FinanceBenchDataset(Dataset):
                 GoldAnchor(
                     doc_id=doc_name,
                     answer_spans=spans,
-                    page=int(page) if isinstance(page, (int, float)) else None,
+                    # FinanceBench numbers pages from 0 (measured 2026-10-16:
+                    # read as 1-based, 9.5% of gold pages hold their evidence
+                    # and 82.5% sit one page off); the engine and every PDF
+                    # reader number from 1.
+                    page=int(page) + 1 if isinstance(page, (int, float)) else None,
                 )
             )
         if not anchors:  # fall back to the answer string alone

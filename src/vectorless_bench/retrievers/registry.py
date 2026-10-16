@@ -73,3 +73,12 @@ register("vector_rag", _vector_rag)
 register("bm25", _bm25)
 register("full_context", _full_context)
 register("pageindex", _pageindex)
+
+
+def _agentic_grep(**cfg: Any) -> Retriever:
+    from .agentic_grep import AgenticGrepRetriever
+
+    return AgenticGrepRetriever(**cfg)
+
+
+register("agentic_grep", _agentic_grep)

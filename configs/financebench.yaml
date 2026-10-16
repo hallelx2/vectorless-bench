@@ -33,11 +33,11 @@ sample_seed: 0
 out_dir: runs
 
 # models (priced from the shared table -> apples-to-apples cost)
-model: gemini-2.5-flash-lite            # vectorless retrieval + full_context + pageindex nav
+model: gemini-3.5-flash-lite            # vectorless retrieval + full_context + pageindex nav
 embedding_model: gemini-embedding-2
 judge: false                       # set true to add the answer-quality axis
-judge_model: gemini-2.5-flash-lite
-gen_model: gemini-2.5-flash-lite
+judge_model: gemini-3.5-flash-lite
+gen_model: gemini-3.5-flash-lite
 
 system_params:
   vectorless:
@@ -47,9 +47,9 @@ system_params:
     chunk_tokens: 512
     overlap_tokens: 64
   full_context:
-    model: gemini-2.5-flash-lite             # cheaper ceiling; bump for max quality
+    model: gemini-3.5-flash-lite             # cheaper ceiling; bump for max quality
     max_context_tokens: 120000
   pageindex:
     mode: oss                      # "oss" = their tree builder self-hosted; "cloud" = PageIndexClient
-    model: gemini-2.5-flash-lite             # tree-build model; reasoning uses top-level `model`
+    model: gemini-3.5-flash-lite             # tree-build model; reasoning uses top-level `model`
     repo_path: /opt/PageIndex      # checkout of VectifyAI/PageIndex (Docker sets this)
