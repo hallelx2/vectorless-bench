@@ -24,11 +24,17 @@ def score_question(
 ) -> Dict[str, float]:
     """Compute the full metric bundle for one (question, retrieval) pair."""
     sections = result.sections
+    from ..pricing import count_tokens
+
+    # How much text the system handed back: k sections of 100 tokens and k of
+    # 2,000 are not the same retrieval, so every row says which it was.
+    context_tokens = float(sum(count_tokens(s.content) for s in sections))
 
     # No-answer items are scored purely on abstention; ranking metrics don't
     # apply because there is no gold passage to find.
     if question.is_no_answer:
         m = citation.abstention_metrics(question, sections)
+        m["context_tokens"] = context_tokens
         return m
 
     labels = relevance_labels(sections, question.gold)
@@ -37,4 +43,5 @@ def score_question(
     m.update(retrieval.score_ranking(labels, num_gold, k))
     m.update(citation.citation_metrics(sections, question.gold))
     m["gold_covered"] = covered_anchors(sections, question.gold) / num_gold
+    m["context_tokens"] = context_tokens
     return m

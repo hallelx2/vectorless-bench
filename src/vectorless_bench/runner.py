@@ -316,6 +316,7 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         usage=usage_to_dict(result.usage), metrics=m,
         selected_ids=[s.section_id for s in result.sections],
         strategy=result.strategy, cold=result.cold, error=result.error,
+        trace=dict(result.trace or {}),
         timing=result.trace.get("timing") if isinstance(result.trace, dict) else None,
         **base,
     )

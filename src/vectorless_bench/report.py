@@ -115,6 +115,7 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 f"ndcg@{k}": avg_metric(f"ndcg@{k}"),
                 "mrr": avg_metric("mrr"),
                 f"hit@{k}": avg_metric(f"hit@{k}"),
+                "context_tokens": avg_metric("context_tokens"),
             },
             "citation": {
                 "span_in_top1": avg_metric("span_in_top1"),

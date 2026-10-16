@@ -41,6 +41,13 @@ _NAV = (
     'Reply as JSON: {"action": "open", "child": <number>} to open the child most likely to hold the answer, '
     'or {"action": "back"} if none of them can.'
 )
+# At the root there is nowhere to go back to: the paper's navigator reverts
+# only from a child to its parent, so the root is always a choice.
+_NAV_ROOT = (
+    "You are navigating a tree of summaries of a long document to find the part that answers a question. "
+    "You see the summaries of the top-level parts of the document. "
+    'Reply as JSON: {"action": "open", "child": <number>} with the part most likely to hold the answer.'
+)
 _LEAF = (
     "You are reading one segment of a long document. Decide whether it contains the information needed to answer "
     'the question. Reply as JSON: {"action": "accept"} if it does, or {"action": "back"} if it does not.'
@@ -121,6 +128,7 @@ class MemWalkerRetriever:
         read: List[_Node] = []
         accepted: Optional[_Node] = None
         steps = 0
+        forced = 0
         try:
             while stack and steps < self.max_steps:
                 steps += 1
@@ -140,9 +148,19 @@ class MemWalkerRetriever:
                     continue
                 listing = "\n".join(f"{i + 1}. {c.summary}" for i, c in options)
                 wm = "\n".join(memory[-4:]) or "(nothing yet)"
-                v = self._ask(_NAV, f"QUESTION: {question.question}\n\nWORKING MEMORY:\n{wm}\n\nCHILDREN:\n{listing}", usage)
+                at_root = node is root
+                v = self._ask(_NAV_ROOT if at_root else _NAV,
+                              f"QUESTION: {question.question}\n\nWORKING MEMORY:\n{wm}\n\nCHILDREN:\n{listing}", usage)
                 pick = v.get("child")
-                if v.get("action") == "open" and isinstance(pick, int) and (pick - 1) in dict(options):
+                try:
+                    pick = int(pick)
+                except (TypeError, ValueError):
+                    pick = None
+                if at_root and (pick is None or (pick - 1) not in dict(options)):
+                    pick = options[0][0] + 1  # the root must choose; take the next untried part
+                    v = {"action": "open"}
+                    forced += 1
+                if v.get("action") == "open" and pick is not None and (pick - 1) in dict(options):
                     done.add(pick - 1)
                     child = node.children[pick - 1]
                     memory.append(child.summary)
@@ -156,4 +174,5 @@ class MemWalkerRetriever:
         sections = [RetrievedSection(content=n.text, section_id=f"seg{n.idx}") for n in order[:k]]
         return RetrievalResult(qid=question.qid, system=self.name, query=question.question, sections=sections,
                                usage=usage, latency_ms=(time.perf_counter() - t0) * 1000.0, strategy="memwalker",
-                               cold=cold, trace={"steps": steps, "accepted": accepted is not None, "leaves_read": len(read)})
+                               cold=cold, trace={"steps": steps, "accepted": accepted is not None, "leaves_read": len(read),
+                                      "root_choices_forced": forced})

@@ -177,6 +177,9 @@ class RunRecord:
     attempts: int = 1
     # Provider spend on attempts discarded because the machine was busy.
     rerun_cost_usd: float = 0.0
+    # The retriever's own account of the query (steps, pages chosen, ...),
+    # kept so a surprising score can be explained from the run itself.
+    trace: Dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

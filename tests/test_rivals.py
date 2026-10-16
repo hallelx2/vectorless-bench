@@ -124,3 +124,23 @@ def test_vector_memory_backend_scopes_and_spans_corpus(monkeypatch):
     every = r.retrieve(Question(qid="q2", doc_id=CORPUS, question="capex"), k=5)
     assert len(every.sections) == 2
     assert r._query_text("x").startswith("Represent this sentence")
+
+
+def test_memwalker_root_never_reverts(monkeypatch):
+    import json as _j
+    from vectorless_bench.retrievers import memwalker as mw
+
+    def fake(model, system, user, **kw):
+        if system == mw._SUM:
+            return _Out("summary")
+        if system == mw._NAV_ROOT:
+            return _Out(_j.dumps({"action": "back"}))  # a model that refuses at the root
+        if system == mw._NAV:
+            return _Out(_j.dumps({"action": "open", "child": "1"}))  # a string number still opens
+        return _Out(_j.dumps({"action": "accept"}))
+
+    monkeypatch.setattr(mw, "complete", fake)
+    r = mw.MemWalkerRetriever(segment_tokens=300, fanout=3)
+    r.setup([Doc(doc_id="d", title="d", content=("words " * 400 + "\n") * 12)])
+    out = r.retrieve(Question(qid="q", doc_id="d", question="?"), k=3)
+    assert out.sections and out.trace["root_choices_forced"] >= 1 and out.trace["accepted"]

@@ -65,7 +65,7 @@ class ReadAgentRetriever:
         self.setup_seconds = 0.0
         self.setup_usage = Usage()
         self._lock = threading.Lock()
-        self.setup_meta = {"implementation": "reimplemented from the paper (ReadAgent-P)"}
+        self.setup_meta = {"implementation": "reimplemented from the paper (ReadAgent-P)", "pagination_fallbacks": 0}
         self._pages: Dict[str, List[str]] = {}
         self._gists: Dict[str, List[str]] = {}
 
@@ -102,9 +102,10 @@ class ReadAgentRetriever:
                 try:
                     cut = int(json.loads(out.text).get("break"))
                 except Exception:
+                    cut = -1
+                if cut not in cands:  # unparseable or off the list: the latest break, counted
                     cut = cands[-1]
-                if cut not in cands:
-                    cut = cands[-1]
+                    self.setup_meta["pagination_fallbacks"] += 1
             pages.append("\n\n".join(window[:cut]))
             i += cut
         return pages
