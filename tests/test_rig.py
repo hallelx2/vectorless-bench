@@ -111,3 +111,22 @@ def test_spend_cap_stops_a_run(tmp_path):
     assert man["extra"]["stopped"] and "cap" in man["extra"]["stopped"]
     systems = {json.loads(l)["system"] for l in (run_dir / "records.jsonl").read_text().splitlines()}
     assert systems == {"mock"}, "the run stops at the cap instead of starting the next system"
+
+
+def test_rerun_spend_is_counted(tmp_path, monkeypatch):
+    from vectorless_bench import rig as rigmod
+    calls = {"n": 0}
+
+    def always_busy(self, start):
+        calls["n"] += 1
+        return {"flagged": True, "reasons": ["test: busy"], "hosts": {}}
+
+    monkeypatch.setattr(rigmod.Rig, "end", always_busy)
+    cfg = RunConfig(dataset="fixtures", systems=["mock"], out_dir=str(tmp_path), limit=1,
+                    rig={"rtt_targets": [], "rerun_flagged": 2})
+    run_dir = run(cfg, progress=False)
+    rows = [json.loads(l) for l in (run_dir / "records.jsonl").read_text().splitlines()]
+    assert rows[0]["attempts"] == 3 and rows[0]["flagged"]
+    assert rows[0]["rerun_cost_usd"] > 0, "two discarded attempts cost money"
+    man = json.loads((run_dir / "manifest.json").read_text())
+    assert man["extra"]["spend_usd"] >= rows[0]["rerun_cost_usd"] + rows[0]["usage"]["cost_usd"] - 1e-6

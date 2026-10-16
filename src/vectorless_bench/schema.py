@@ -170,6 +170,8 @@ class RunRecord:
     host: Dict[str, Any] = field(default_factory=dict)
     flagged: bool = False
     attempts: int = 1
+    # Provider spend on attempts discarded because the machine was busy.
+    rerun_cost_usd: float = 0.0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

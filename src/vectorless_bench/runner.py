@@ -118,7 +118,8 @@ def run(cfg: RunConfig, progress: bool = True) -> Path:
             with write_lock:
                 fh.write(rec.to_json() + "\n")
                 fh.flush()
-            spend.add((rec.usage or {}).get("cost_usd", 0.0) + rec.metrics.get("judge_usd", 0.0))
+            spend.add((rec.usage or {}).get("cost_usd", 0.0) + rec.metrics.get("judge_usd", 0.0)
+                      + (rec.rerun_cost_usd or 0.0))
 
         for system in cfg.systems:
             if stopped:
@@ -243,7 +244,12 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
     max_attempts = 1 + (rig.cfg.rerun_flagged if rig is not None and rig.cfg.enabled else 0)
     result = None
     wall_ms = 0.0
+    # Spend on attempts that were thrown away for a busy machine is still
+    # spend: it is kept on the record and counted against the cap.
+    rerun_usd = 0.0
     while attempts < max_attempts:
+        if result is not None:
+            rerun_usd += float(getattr(result.usage, "cost_usd", 0.0) or 0.0)
         attempts += 1
         start = rig.begin() if rig is not None else {}
         t0 = time.perf_counter()
@@ -260,7 +266,7 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         qid=q.qid, system=system, repeat=repeat, domain=q.domain,
         answer_type=q.answer_type.value, difficulty=q.difficulty,
         phase=cfg.phase, attempts=attempts, flagged=bool(host.get("flagged")),
-        host=host,
+        host=host, rerun_cost_usd=rerun_usd,
     )
     if result is None:
         return RunRecord(latency_ms=wall_ms, wall_ms=wall_ms, usage={}, metrics={}, error=err, **base)

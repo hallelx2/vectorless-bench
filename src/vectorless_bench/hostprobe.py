@@ -103,6 +103,13 @@ def machine() -> Dict[str, str]:
 
 def snapshot() -> Dict[str, object]:
     """Cumulative counters at one instant."""
+    # The counters are read over a few milliseconds (more on a busy host
+    # with many processes); stamp the snapshot at the middle of that read,
+    # so a slow read does not stretch or shrink the interval it measures.
+    m0 = time.monotonic()
+    cpu = cpu_ticks()
+    procs = process_ticks()
+    m1 = time.monotonic()
     load1, load5, _ = os.getloadavg()
     mem = {}
     try:
@@ -114,12 +121,13 @@ def snapshot() -> Dict[str, object]:
         pass
     return {
         "t": time.time(),
-        "mono": time.monotonic(),
+        "mono": (m0 + m1) / 2,
+        "read_ms": round((m1 - m0) * 1000, 2),
         "host": socket.gethostname(),
         "machine": machine(),
         "ncpu": os.cpu_count() or 1,
-        "cpu": cpu_ticks(),
-        "procs": process_ticks(),
+        "cpu": cpu,
+        "procs": procs,
         "load1": load1,
         "load5": load5,
         "mem_kb": mem,
