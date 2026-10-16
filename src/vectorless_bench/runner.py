@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import metrics
-from .config import RunConfig
+from .config import RunConfig, validate
 from .datasets import build_dataset
 from .manifest import Manifest
 from .retrievers import build as build_retriever
@@ -43,6 +43,7 @@ def _load_dataset(cfg: RunConfig):
 
 
 def run(cfg: RunConfig, progress: bool = True) -> Path:
+    validate(cfg)
     captured: List[str] = []
     with warnings.catch_warnings(record=True) as wlist:
         warnings.simplefilter("always")

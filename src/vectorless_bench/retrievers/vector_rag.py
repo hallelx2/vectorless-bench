@@ -1,16 +1,16 @@
-"""Vector-RAG baseline: pgvector + OpenAI embeddings + cosine top-k.
+"""Vector-RAG baseline: pgvector + Gemini (Vertex) or local BGE embeddings + cosine top-k.
 
 This is the system Vectorless is positioned against, so it is implemented as a
 *fair* representative of standard practice, not a strawman:
 - standard token-windowed chunks with overlap (see _chunk.py),
-- text-embedding-3-small by default (cheap, widely used),
+- gemini-embedding-2 on Vertex by default, or a local BGE model (BAAI/bge-m3),
 - cosine top-k, with an optional reranker hook,
 - ingest embedding cost tracked and reported (the hidden cost of re-indexing).
 
 Two storage backends:
 - "pgvector" (default): the real thing — Postgres + the pgvector extension.
 - "memory": pure-Python cosine over an in-RAM matrix, so you can get quality
-  numbers without standing up Postgres. Both still need an OpenAI key to embed.
+  numbers without standing up Postgres.
 
 Query-time cost is the query-embedding cost (retrieval does no generation); the
 one-time index cost is reported separately via setup_usage.
@@ -32,12 +32,12 @@ class VectorRagRetriever:
 
     def __init__(
         self,
-        embedding_model: str = "text-embedding-3-small",
+        embedding_model: str = "gemini-embedding-2",
         backend: str = "pgvector",
         dsn: Optional[str] = None,
         chunk_tokens: int = 512,
         overlap_tokens: int = 64,
-        dim: int = 1536,
+        dim: int = 768,
         per_doc: bool = True,
         reranker: Optional[str] = None,
         **_: object,
@@ -56,15 +56,8 @@ class VectorRagRetriever:
         self._vectors: List[List[float]] = []  # memory backend
         self._conn = None
         self._table = "vlbench_chunks"
-        self._openai = None
 
     # -- embeddings --------------------------------------------------------
-    def _client(self):
-        if self._openai is None:
-            from openai import OpenAI  # type: ignore
-
-            self._openai = OpenAI()
-        return self._openai
 
     def _cached_embed(self, texts: List[str]) -> List[List[float]]:
         import hashlib
@@ -93,15 +86,14 @@ class VectorRagRetriever:
             return self._embed_gemini(texts)
         if "/" in self.embedding_model:  # a Hugging Face id: run it locally
             return self._embed_local(texts)
-        resp = self._client().embeddings.create(
-            model=self.embedding_model, input=list(texts)
+        raise ValueError(
+            f"embedding model {self.embedding_model!r} is neither Gemini on Vertex "
+            "nor a local Hugging Face model; this benchmark uses only those"
         )
-        return [d.embedding for d in resp.data]
 
     def _embed_local(self, texts: Sequence[str]) -> List[List[float]]:
-        """A local sentence-transformers model — BAAI/bge-small-en-v1.5 by
-        default in the FinanceBench config: 384 dimensions, 33M parameters,
-        the standard small English retriever people actually deploy. No
+        """A local sentence-transformers model — BAAI/bge-m3 for the full
+        benchmark (1024 dimensions, the strong open multilingual retriever). No
         network in the baseline's numbers, cost zero by construction, setup
         time measured and reported like every other system's."""
         from sentence_transformers import SentenceTransformer  # type: ignore
@@ -112,31 +104,39 @@ class VectorRagRetriever:
         return [list(map(float, v)) for v in vecs]
 
     def _embed_gemini(self, texts: Sequence[str]) -> List[List[float]]:
-        """Gemini embeddings via google-genai. gemini-embedding-2 aggregates a
-        list of plain strings into ONE vector, so each text is wrapped in its
-        own Content — one call then returns one vector per Content (probed
-        2026-09-19: 90 inputs → 90 embeddings). 768 dimensions, one of the
-        three Google recommends; cosine ranking is unaffected."""
-        from google import genai  # type: ignore
+        """Gemini embeddings on Vertex AI. Vertex's embedContent takes ONE
+        content per request for gemini-embedding-2 (measured 2026-10-16:
+        "only supports one content at a time"; the AI Studio endpoint took
+        a list), so texts go one per request, in parallel, retried with
+        backoff on a rate limit. 768 dimensions, one of the three Google
+        recommends; cosine ranking is unaffected. Order is preserved."""
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
         from google.genai import types  # type: ignore
 
-        if getattr(self, "_gemini", None) is None:
-            self._gemini = genai.Client()
-        out: List[List[float]] = []
-        batch = 90
-        for i in range(0, len(texts), batch):
-            chunk = list(texts[i : i + batch])
-            r = self._gemini.models.embed_content(
-                model=self.embedding_model,
-                contents=[types.Content(parts=[types.Part(text=t)]) for t in chunk],
-                config=types.EmbedContentConfig(output_dimensionality=768),
-            )
-            if len(r.embeddings) != len(chunk):
-                raise RuntimeError(
-                    f"gemini returned {len(r.embeddings)} embeddings for {len(chunk)} inputs"
-                )
-            out.extend(list(e.values) for e in r.embeddings)
-        return out
+        from .._llm import genai_client
+
+        client = genai_client()
+        cfg = types.EmbedContentConfig(output_dimensionality=768)
+
+        def one(text: str) -> List[float]:
+            delay = 1.0
+            for attempt in range(8):
+                try:
+                    r = client.models.embed_content(model=self.embedding_model, contents=text, config=cfg)
+                    return list(r.embeddings[0].values)
+                except Exception as e:  # pragma: no cover - network
+                    msg = str(e)
+                    if attempt == 7 or not ("429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg):
+                        raise
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+            raise RuntimeError("unreachable")
+
+        workers = int(os.environ.get("VLBENCH_EMBED_CONCURRENCY", "16"))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(one, list(texts)))
 
     def setup(self, corpus: List[Doc]) -> None:
         import time

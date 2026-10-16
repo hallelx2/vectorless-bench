@@ -26,7 +26,7 @@ sample_seed: 0
 out_dir: /results
 
 model: gemini-2.5-flash
-embedding_model: text-embedding-3-small   # unused unless vector_rag is enabled
+embedding_model: gemini-embedding-2   # unused unless vector_rag is enabled
 
 system_params:
   full_context:

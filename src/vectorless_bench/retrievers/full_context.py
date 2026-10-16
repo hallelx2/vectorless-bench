@@ -34,7 +34,7 @@ class FullContextRetriever:
 
     def __init__(
         self,
-        model: str = "gpt-4o-mini",
+        model: str = "gemini-2.5-flash-lite",
         max_context_tokens: int = 120_000,
         max_output_tokens: int = 1500,
         **_: object,

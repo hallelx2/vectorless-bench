@@ -34,7 +34,7 @@ class MockRetriever:
     def __init__(
         self,
         accuracy: float = 1.0,
-        model: str = "claude-haiku-4-5",
+        model: str = "gemini-2.5-flash-lite",
         base_latency_ms: float = 35.0,
         **_: object,
     ) -> None:
