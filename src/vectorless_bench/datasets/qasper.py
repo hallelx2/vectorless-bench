@@ -96,6 +96,11 @@ class QasperDataset(Dataset):
         out: List[Question] = []
         pages_cache: Dict[str, List[str]] = {}
         for r in self._load():
+            # The paper's own paragraphs, one window each, for QASPER's
+            # evidence F1 (metrics.native): shared by the paper's questions.
+            paras = [str(p).strip() for sec in ((r.get("full_text") or {}).get("paragraphs") or []) for p in (sec or [])]
+            para_probes = [_files.probe(p) for p in paras]
+            para_index = {p[:200]: i for i, p in enumerate(paras) if p}
             pid = str(r["id"])
             txt = self.dir / "pdfs" / f"{pid}.txt"
             if pid not in pages_cache:
@@ -107,7 +112,12 @@ class QasperDataset(Dataset):
             answers = qas.get("answers") or []
             for i, qtext in enumerate(qs):
                 ann = (answers[i] or {}).get("answer") or [] if i < len(answers) else []
-                out.append(self._question(pid, str(qids[i]) if i < len(qids) else f"{pid}_{i}", qtext, ann, pages))
+                q = self._question(pid, str(qids[i]) if i < len(qids) else f"{pid}_{i}", qtext, ann, pages)
+                ev = {para_index[e] for a in ann for e in (str(x).replace("FLOAT SELECTED:", "").strip()[:200]
+                                                       for x in (a.get("evidence") or [])) if e in para_index}
+                q.meta["paragraph_probes"] = para_probes
+                q.meta["evidence_paragraphs"] = sorted(ev)
+                out.append(q)
         return out
 
     def _question(self, pid: str, qid: str, qtext: str, ann: List[Dict[str, Any]], pages: List[str]) -> Question:
@@ -137,8 +147,18 @@ class QasperDataset(Dataset):
             answer=None if unanswerable else (answer or None),
             answer_type=AnswerType.NO_ANSWER if unanswerable else AnswerType.LOOKUP,
             domain="science",
-            meta={"answers": ann, "answer_type_qasper": _qasper_type(first, unanswerable)},
+            meta={"answers": ann, "answer_strings": [_answer_string(a) for a in ann],
+                  "answer_type_qasper": _qasper_type(first, unanswerable)},
         )
+
+
+def _answer_string(a: Dict[str, Any]) -> str:
+    """One annotator's answer as QASPER's evaluator reads it."""
+    if a.get("unanswerable"):
+        return "unanswerable"
+    if a.get("yes_no") is not None:
+        return "yes" if a["yes_no"] else "no"
+    return (a.get("free_form_answer") or "").strip() or ", ".join(a.get("extractive_spans") or [])
 
 
 def _qasper_type(a: Dict[str, Any], unanswerable: bool) -> str:

@@ -367,6 +367,7 @@ class VectorlessRetriever:
                 title=ev.document_title or ev.section_title or doc,
                 page=ev.page or None,
                 score=ev.confidence,
+                doc_id=doc,
             ))
         read = [logical.get(d, d) for h in (resp.hops or []) for d in (h.read or [])]
         return RetrievalResult(

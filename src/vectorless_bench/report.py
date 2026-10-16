@@ -127,6 +127,11 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
             "abstention": {
                 "abstained": avg_metric("abstained"),
             },
+            # Each dataset's own published metric (metrics.native), by name.
+            "native": {
+                name[len("native_"):]: avg_metric(name)
+                for name in sorted({n for r in ok for n in r["metrics"] if n.startswith("native_")})
+            } or None,
             # The same retrieval metrics over only the questions whose gold
             # is findable in the extracted text (datasets.base.gold_reachable).
             "reachable": _reachable_block(ok, k),

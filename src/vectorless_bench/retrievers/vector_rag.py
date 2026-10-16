@@ -202,6 +202,7 @@ class VectorRagRetriever:
         # Embeddings are cached on disk keyed by model and chunk text, so a
         # re-run of the bench does not repeat a CPU-hours ingest. The
         # first, uncached pass is the one whose setup_seconds is reported.
+        self._chunk_doc = {c.chunk_id: c.doc_id for c in self._chunks}
         vectors = self._cached_embed(self._chunks)
 
         if vectors:
@@ -280,7 +281,7 @@ class VectorRagRetriever:
             cost_usd=compute_embedding(self.embedding_model, q_tokens),
         )
         sections = [
-            RetrievedSection(content=text, section_id=cid, score=score)
+            RetrievedSection(content=text, section_id=cid, score=score, doc_id=self._chunk_doc.get(cid, ""))
             for (cid, text, score) in rows
         ]
         return RetrievalResult(

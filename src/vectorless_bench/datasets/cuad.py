@@ -96,6 +96,6 @@ class CuadDataset(Dataset):
                         answer=None if none else spans[0],
                         answer_type=AnswerType.NO_ANSWER if none else AnswerType.LOOKUP,
                         domain="legal_contract",
-                        meta={"clause_type": clause},
+                        meta={"clause_type": clause, "answers": spans},
                     ))
         return out

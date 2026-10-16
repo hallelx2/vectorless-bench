@@ -174,11 +174,11 @@ class AgenticGrepRetriever:
             text, _ = self._corpus.read(doc, int(ev.get("page", 1)), int(ev.get("start_line", 1)), int(ev.get("end_line", 1)))
             if text:
                 sections.append(RetrievedSection(content=text, section_id=f"{doc}:p{ev.get('page')}:{ev.get('start_line')}",
-                                                 title=doc, page=int(ev.get("page", 1))))
+                                                 title=doc, page=int(ev.get("page", 1)), doc_id=doc))
         if not sections and not finished:
             # Ran out of turns: what it read is what it found.
             sections = [RetrievedSection(content=r["text"], section_id=f"{r['doc']}:p{r['page']}", title=str(r["doc"]),
-                                         page=r["page"]) for r in read_log[::-1]]
+                                         page=r["page"], doc_id=str(r["doc"])) for r in read_log[::-1]]
         return RetrievalResult(
             qid=question.qid, system=self.name, query=question.question,
             sections=sections[:k], usage=usage, latency_ms=(time.perf_counter() - t0) * 1000.0,
