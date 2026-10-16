@@ -128,3 +128,30 @@ def test_gold_reachable_marks_questions_no_system_can_win(tmp_path):
     lost = Question(qid="b", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", answer_spans=["a chart of churn by region"])], answer="x")
     figure = Question(qid="c", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", page=4, page_text="Figure 3")], answer="x")
     assert gold_reachable(found, docs) and not gold_reachable(lost, docs) and not gold_reachable(figure, docs)
+
+
+def test_a_corpus_question_keeps_the_whole_corpus(monkeypatch):
+    """A sampled MultiHop run must still search all the articles: trimming
+    the corpus to the sampled questions' gold documents would hand every
+    system a library made of answers."""
+    from vectorless_bench import runner
+    from vectorless_bench.config import RunConfig
+    from vectorless_bench.datasets.base import CORPUS
+    from vectorless_bench.schema import Doc, GoldAnchor, Question
+
+    docs = [Doc(doc_id=f"n{i}", title=f"n{i}", content="x") for i in range(10)]
+
+    class _DS:
+        def corpus(self):
+            return docs
+
+        def questions_for_available_corpus(self):
+            return [Question(qid=f"q{i}", doc_id=CORPUS, question="?", meta={"doc_ids": [f"n{i}", f"n{i + 1}"]},
+                             gold=[GoldAnchor(doc_id=f"n{i}", answer_spans=["x"])], answer="x") for i in range(4)]
+
+        def subset(self, qs, limit, seed=0):
+            return qs[:limit]
+
+    monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: _DS())
+    _, corpus, questions = runner._load_dataset(RunConfig(dataset="multihop_rag", limit=1))
+    assert len(questions) == 1 and len(corpus) == 10

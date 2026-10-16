@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 from . import metrics
 from .config import RunConfig, validate
 from .datasets import build_dataset
+from .datasets.base import CORPUS
 from .manifest import Manifest
 from .retrievers import build as build_retriever
 from .rig import Rig, RigConfig, machine_info, remote_machine_info
@@ -71,10 +72,14 @@ def _load_dataset(cfg: RunConfig):
     else:
         questions = ds.questions()
     questions = ds.subset(questions, cfg.limit, cfg.sample_seed)
-    # keep only docs actually referenced by the selected questions
+    # Keep only docs the selected questions are asked over. A per-document
+    # question is asked over its own document. A corpus-level question
+    # (MultiHop-RAG) is asked over the WHOLE collection: trimming it to the
+    # sampled questions' gold documents would hand every system a library
+    # made of answers, so the full corpus is kept.
+    if any(q.doc_id == CORPUS for q in questions):
+        return ds, corpus, questions
     needed = {q.doc_id for q in questions}
-    for q in questions:
-        needed.update(q.meta.get("doc_ids", []) or [])
     corpus = [d for d in corpus if d.doc_id in needed]
     return ds, corpus, questions
 
