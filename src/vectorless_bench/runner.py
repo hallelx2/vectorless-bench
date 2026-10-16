@@ -49,8 +49,7 @@ def run(cfg: RunConfig, progress: bool = True) -> Path:
         ds, corpus, questions = _load_dataset(cfg)
         captured = [str(w.message) for w in wlist]
 
-    out_dir = Path(cfg.out_dir) / _stamp()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _new_run_dir(Path(cfg.out_dir))
     records_path = out_dir / "records.jsonl"
     setup_info = {}
 
@@ -142,6 +141,23 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         metrics=m, selected_ids=[s.section_id for s in result.sections],
         strategy=result.strategy, cold=result.cold, error=result.error,
     )
+
+
+def _new_run_dir(root: Path) -> Path:
+    """A fresh run directory, created exclusively: the timestamp keeps runs
+    sorted, the random suffix and exist_ok=False keep two runs started in
+    the same second from writing into one directory."""
+    import secrets
+
+    root.mkdir(parents=True, exist_ok=True)
+    for _ in range(5):
+        d = root / f"{_stamp()}_{secrets.token_hex(3)}"
+        try:
+            d.mkdir()
+            return d
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"could not create a unique run directory under {root}")
 
 
 def _stamp() -> str:

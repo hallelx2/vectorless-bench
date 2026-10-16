@@ -128,8 +128,8 @@ def test_gold_without_paths_marks_the_metric_unmeasurable():
     m = citation_metrics([_sec(["Item 7. MD&A", "Long-term Debt"])], gold)
     assert m["gold_has_path"] == 0.0, "gold carries no path; the run must say so"
     assert m["path_coverage"] == 1.0, "our side DID produce a path"
-    # the metric still computes to zero — which is exactly why the flag matters
-    assert m["path_correct_top1"] == 0.0
+    # unmeasurable, so absent: averages skip it and the report says n/a
+    assert "path_correct_top1" not in m
 
 
 def test_gold_with_paths_is_measurable_and_can_succeed():

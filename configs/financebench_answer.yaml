@@ -1,14 +1,18 @@
-# FinanceBench, ANSWER-ACCURACY axis — the number that is comparable to the
-# field (PatronusAI's published baselines, PageIndex's 98.7%), as opposed to
-# the retrieval numbers in financebench_jev.yaml.
+# FinanceBench, ANSWER-ACCURACY axis — the axis the field reports
+# (PatronusAI's published baselines; PageIndex/Mafin 2.5 report 98.7%, a
+# figure whose grading method is not published: a later re-evaluation got
+# 98.7% only after human re-grading, 90.7% on strict matching to the gold
+# answers). Numbers here compare to those only when the grading method
+# matches. Retrieval numbers are in financebench_jev.yaml.
 #
 # The distinction matters and must survive into anything buyer-facing:
 #   financebench_jev.yaml  scores RETRIEVAL  — did the returned units contain
 #                          the gold evidence (F1@5, hit@5, span-in-top-1)?
 #   this config            scores ANSWERS    — generate from ONLY the retrieved
 #                          context, then grade against FinanceBench's gold
-#                          answer. hit@5 is the ceiling: you cannot answer
-#                          right more often than you retrieve the evidence.
+#                          answer. hit@5 is a retrieval diagnostic, not a
+#                          ceiling: an answer can be right from other
+#                          retrieved evidence even when the gold page is missed.
 #
 # The judge is blind to which system produced an answer, grades against the
 # dataset's gold answer rather than its own knowledge, and its spend is

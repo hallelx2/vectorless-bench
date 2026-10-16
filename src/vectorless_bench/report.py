@@ -62,8 +62,11 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 by_q[r["qid"]].append(r.get("selected_ids", []))
         det = [aggregate.determinism(v) for v in by_q.values() if len(v) > 1]
 
-        def avg_metric(name: str) -> float:
-            return _mean([r["metrics"].get(name, 0.0) for r in ok if name in r["metrics"]])
+        def avg_metric(name: str):
+            vals = [r["metrics"][name] for r in ok if name in r["metrics"]]
+            # None, not 0.0, when no row measured it: "unmeasured" and "zero"
+            # are different findings.
+            return _mean(vals) if vals else None
 
         results[system] = {
             "n": len(ok),
@@ -116,6 +119,22 @@ def _fmt(x: Any, p: int = 3) -> str:
         return f"{x:.{p}f}"
     return str(x)
 
+
+
+def _path_cells(c: dict) -> tuple:
+    """Table cells for path_correct_top1 and near_miss_rate. A value is shown
+    only where it was measured; otherwise the cell says why not: an older run
+    that never recorded gold paths, a corpus with none, or a system that
+    returns no paths (chunk systems)."""
+    gold = c.get("gold_has_path")
+    if gold is None:
+        why = "unknown (run predates gold_has_path)"
+    elif not gold:
+        why = "n/a (no gold paths)"
+    else:
+        why = "n/a (no paths returned)"
+    pc, nm = c.get("path_correct_top1"), c.get("near_miss_rate")
+    return (_fmt(pc) if pc is not None else why, _fmt(nm) if nm is not None else why)
 
 def write_reports(run_dir: Path, k: int) -> Dict[str, Any]:
     results = summarize(run_dir, k)
@@ -187,20 +206,10 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
     lines.append("|---|---|---|---|---|---|")
     for s, r in _sorted(results):
         c = r["citation"]
-        cov = c.get("path_coverage") or 0.0
-        gold = c.get("gold_has_path") or 0.0
-        # n/a rather than 0.000: a zero here reads as a real score, whether it
-        # came from a chunk baseline with no paths or a corpus with no gold.
-        if not gold:
-            path_cell = near_cell = "n/a (no gold paths)"
-        elif not cov:
-            path_cell = near_cell = "n/a"
-        else:
-            path_cell = _fmt(c["path_correct_top1"])
-            near_cell = _fmt(c["near_miss_rate"])
+        path_cell, near_cell = _path_cells(c)
         lines.append(
             f"| {s} | {_fmt(c['span_in_top1'])} | {path_cell} | "
-            f"{near_cell} | {_fmt(cov)} | {_fmt(r['abstention']['abstained'])} |"
+            f"{near_cell} | {_fmt(c.get('path_coverage'))} | {_fmt(r['abstention']['abstained'])} |"
         )
 
     lines.append("\n## Determinism & ingest cost\n")
@@ -340,22 +349,11 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
     def _cite_row(s, r):
         c = r["citation"]
         cov = c.get("path_coverage") or 0.0
-        gold = c.get("gold_has_path") or 0.0
-        # Without a path on BOTH sides the structural metrics are undefined.
-        # Printing 0.000 makes a chunk baseline look flawless on the one axis
-        # it cannot be measured on, and makes a corpus that carries no gold
-        # paths look like a system failure. Say which it is.
-        if not gold:
-            return [(s, "sys"), (_fmt(c["span_in_top1"]), ""),
-                    ("n/a (no gold paths)", "na"), ("n/a (no gold paths)", "na"),
-                    (_fmt(cov), ""), (_fmt(r["abstention"]["abstained"]), "")]
-        if cov:
-            path_cell = (_fmt(c["path_correct_top1"]), "")
-            near_cell = (_fmt(c["near_miss_rate"]),
-                         "bad" if c["near_miss_rate"] > 0.1 else "")
-        else:
-            path_cell = ("n/a", "na")
-            near_cell = ("n/a", "na")
+        pc, nm = _path_cells(c)
+        measured_pc = c.get("path_correct_top1") is not None
+        measured_nm = c.get("near_miss_rate") is not None
+        path_cell = (pc, "" if measured_pc else "na")
+        near_cell = (nm, ("bad" if c["near_miss_rate"] > 0.1 else "") if measured_nm else "na")
         return [(s, "sys"), (_fmt(c["span_in_top1"]), ""), path_cell, near_cell,
                 (_fmt(cov), "bad" if 0 < cov < 0.5 else ""),
                 (_fmt(r["abstention"]["abstained"]), "")]
@@ -381,7 +379,7 @@ def _write_html(run_dir: Path, results: Dict[str, Any], k: int) -> None:
 <h2>Retrieval quality</h2>
 {_html_table(["System",f"P@{k}",f"R@{k}",f"F1@{k}",f"nDCG@{k}","MRR",f"hit@{k}"], qual_rows)}
 <h2>Citation exactness &amp; near-miss</h2>
-<div class="sub">near-miss = retrieved a sibling of the right section (the vector failure mode). Lower is better; chunk systems score 0 on path-correctness by construction.</div>
+<div class="sub">near-miss = retrieved a sibling of the right section (the vector failure mode). Lower is better; path metrics read n/a where they cannot be measured (no gold path, or a system that returns no paths).</div>
 {_html_table(["System","span_in_top1","path_correct@1","near_miss","path_coverage","abstained(no-ans)"], cite_rows)}
 <h2>Determinism &amp; ingest cost</h2>
 {_html_table(["System","exact_match","mean_jaccard","ingest s","ingest $"], det_rows)}

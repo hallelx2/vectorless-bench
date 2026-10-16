@@ -200,17 +200,23 @@ class VectorlessRetriever:
             if sid:
                 nodes[sid] = s
 
-        def path_of(sid: str, seen: Optional[set] = None) -> List[str]:
-            # A malformed tree can contain a parent cycle; a benchmark must
-            # not hang on one, so a repeat visit ends the climb.
-            seen = seen or set()
+        def path_of(sid: str, seen: Optional[set] = None) -> Optional[List[str]]:
+            # A malformed tree (a parent cycle, or a parent id that is not in
+            # the tree) yields None, and the section stays unresolved: a
+            # partial path would match fabricated headings.
+            seen = seen if seen is not None else set()
             if sid in seen or sid not in nodes:
-                return []
+                return None
             seen.add(sid)
             node = nodes[sid]
             parent = str(getattr(node, "parent_id", "") or "")
             title = (getattr(node, "title", "") or "").strip()
-            prefix = path_of(parent, seen) if parent else []
+            if parent:
+                prefix = path_of(parent, seen)
+                if prefix is None:
+                    return None
+            else:
+                prefix = []
             return prefix + [title] if title else prefix
 
         for sid in nodes:
