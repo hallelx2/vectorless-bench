@@ -298,6 +298,7 @@ def test_jev_rejects_a_missing_or_unoffered_verdict(monkeypatch):
 
 
 def test_full_context_charges_a_cache_to_its_expiry_and_charges_a_replaced_one(monkeypatch):
+    from vectorless_bench.schema import Usage
     import time as _t
     from vectorless_bench.retrievers import full_context as fc
 
@@ -313,6 +314,7 @@ def test_full_context_charges_a_cache_to_its_expiry_and_charges_a_replaced_one(m
 
 
 def test_raptor_charges_concurrent_queries_to_their_own_usage():
+    from vectorless_bench.schema import Usage
     import threading
     from vectorless_bench.retrievers.raptor import RaptorRetriever
 
