@@ -3,14 +3,26 @@ of questions (with gold anchors). Concrete datasets live alongside this file.
 
 A Dataset is responsible for producing STABLE gold anchors — title-paths,
 answer-spans, pages — never engine section IDs. See schema.GoldAnchor.
+
+Every dataset also knows how to `fetch` its own data (questions and source
+documents) and how to `check` itself: the measured counts and gold-evidence
+validity a run's numbers rest on (`vlbench datasets check <name>`).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from collections import Counter
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+from ..anchors import span_present
 from ..schema import Doc, Question
+
+# Questions whose evidence spans several documents use this doc_id; the
+# documents are listed in `Question.meta["doc_ids"]` and retrieval runs over
+# the whole corpus.
+CORPUS = "__corpus__"
 
 
 class Dataset(ABC):
@@ -23,6 +35,23 @@ class Dataset(ABC):
     @abstractmethod
     def questions(self) -> List[Question]:
         """The evaluation items."""
+
+    def fetch(self) -> None:
+        """Download this dataset's questions and documents. Idempotent."""
+        raise NotImplementedError(f"{self.name} has no fetch; see its module docstring")
+
+    def questions_for_available_corpus(self) -> List[Question]:
+        """Questions whose documents are present, so a partial download is a
+        smaller valid run rather than a run full of errors."""
+        have = {d.doc_id for d in self.corpus()}
+        out = []
+        for q in self.questions():
+            if q.doc_id == CORPUS:
+                if all(d in have for d in q.meta.get("doc_ids", [])):
+                    out.append(q)
+            elif q.doc_id in have:
+                out.append(q)
+        return out
 
     def subset(
         self, questions: List[Question], limit: Optional[int], seed: int = 0
@@ -52,8 +81,64 @@ class Dataset(ABC):
             i += 1
         return out[:limit]
 
+    def check(self) -> Dict[str, Any]:
+        """Measured facts about the loaded data: counts, documents present,
+        and whether the gold evidence is really where the gold says.
 
-DATASETS = ["fixtures", "financebench"]
+        For every anchor with spans: is a span found anywhere in its document
+        (span_found)? For every anchor with a page, on a document with
+        page-separated text: is a span on that page (page_ok), or on the page
+        before or after (page_off_by_one, the 0- vs 1-based trap)?"""
+        from ._files import PAGE_BREAK
+
+        all_q = self.questions()
+        docs = {d.doc_id: d for d in self.corpus()}
+        avail = self.questions_for_available_corpus()
+        types = Counter(q.answer_type.value for q in all_q)
+        needed = set()
+        for q in all_q:
+            needed.update(q.meta.get("doc_ids", []) if q.doc_id == CORPUS else [q.doc_id])
+        anchors = span_anchors = span_found = paged = page_ok = off_by_one = 0
+        for q in avail:
+            for g in q.gold:
+                anchors += 1
+                d = docs.get(g.doc_id)
+                if d is None:
+                    continue
+                if g.answer_spans:
+                    span_anchors += 1
+                    if any(span_present(sp, d.content) for sp in g.answer_spans):
+                        span_found += 1
+                if g.page is not None and PAGE_BREAK in d.content:
+                    pages = d.content.split(PAGE_BREAK)
+                    paged += 1
+
+                    def on(p: int) -> bool:
+                        return 1 <= p <= len(pages) and any(span_present(sp, pages[p - 1]) for sp in g.answer_spans)
+
+                    if on(g.page):
+                        page_ok += 1
+                    elif on(g.page - 1) or on(g.page + 1):
+                        off_by_one += 1
+        pct = lambda a, b: round(100.0 * a / b, 1) if b else None  # noqa: E731
+        return {
+            "dataset": self.name,
+            "questions": len(all_q),
+            "questions_with_docs": len(avail),
+            "documents_needed": len(needed),
+            "documents_present": len([d for d in needed if d in docs]),
+            "answer_types": dict(types),
+            "corpus_level_questions": sum(1 for q in all_q if q.doc_id == CORPUS),
+            "gold_anchors": anchors,
+            "span_found_pct": pct(span_found, span_anchors),
+            "page_anchors_checked": paged,
+            "page_ok_pct": pct(page_ok, paged),
+            "page_off_by_one_pct": pct(off_by_one, paged),
+            "corpus_chars": sum(len(d.content) for d in docs.values()),
+        }
+
+
+DATASETS = ["fixtures", "financebench", "qasper", "cuad", "legalbench_rag", "mmlongbench_doc", "multihop_rag", "manuals"]
 
 
 def available() -> List[str]:
@@ -69,4 +154,28 @@ def build_dataset(name: str, **cfg) -> Dataset:
         from .financebench import FinanceBenchDataset
 
         return FinanceBenchDataset(**cfg)
-    raise KeyError(f"unknown dataset {name!r}")
+    if name == "qasper":
+        from .qasper import QasperDataset
+
+        return QasperDataset(**cfg)
+    if name == "cuad":
+        from .cuad import CuadDataset
+
+        return CuadDataset(**cfg)
+    if name == "legalbench_rag":
+        from .legalbench_rag import LegalBenchRagDataset
+
+        return LegalBenchRagDataset(**cfg)
+    if name == "mmlongbench_doc":
+        from .mmlongbench import MMLongBenchDocDataset
+
+        return MMLongBenchDocDataset(**cfg)
+    if name == "multihop_rag":
+        from .multihop_rag import MultiHopRagDataset
+
+        return MultiHopRagDataset(**cfg)
+    if name == "manuals":
+        from .manuals import ManualsDataset
+
+        return ManualsDataset(**cfg)
+    raise KeyError(f"unknown dataset {name!r}; available: {', '.join(DATASETS)}")

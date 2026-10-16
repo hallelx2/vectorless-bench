@@ -91,6 +91,31 @@ def _print_headline(results, k: int) -> None:
               f"{r['cost']['quality_per_1k_usd']:>10.1f} {r['n']:>4} {r['errors']:>4}")
 
 
+def cmd_datasets(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .datasets import available as datasets_available
+    from .datasets import build_dataset
+
+    if args.action == "list":
+        print("\n".join(datasets_available()))
+        return 0
+    names = datasets_available()[1:] if args.name == "all" else [args.name]
+    params = _json.loads(args.params) if args.params else {}
+    status = 0
+    for name in names:
+        d = build_dataset(name, **params)
+        try:
+            if args.action == "fetch":
+                d.fetch()
+            else:
+                print(_json.dumps(d.check(), indent=1))
+        except Exception as e:  # keep going across datasets
+            status = 1
+            print(f"[vlbench] {name}: {args.action} failed: {e}")
+    return status
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     from .hostprobe import serve
 
@@ -128,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("systems", help="list available systems and datasets")
     s.set_defaults(func=cmd_systems)
+
+    ds = sub.add_parser("datasets", help="list, fetch or check the datasets")
+    ds.add_argument("action", choices=["list", "fetch", "check"])
+    ds.add_argument("name", nargs="?", default="all", help="a dataset name, or all")
+    ds.add_argument("--params", help='dataset params as JSON, e.g. \'{"mini": true}\'')
+    ds.set_defaults(func=cmd_datasets)
 
     pr = sub.add_parser("probe", help="host evidence agent (run on the engine VM)")
     pr.add_argument("--port", type=int, default=9101)

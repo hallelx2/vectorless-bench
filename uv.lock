@@ -4472,6 +4472,8 @@ all = [
     { name = "matplotlib", version = "3.11.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pyarrow", version = "26.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pypdf" },
     { name = "rank-bm25" },
     { name = "requests" },
@@ -4483,6 +4485,8 @@ bm25 = [
 ]
 data = [
     { name = "datasets" },
+    { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pyarrow", version = "26.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pypdf" },
     { name = "requests" },
 ]
@@ -4519,6 +4523,8 @@ requires-dist = [
     { name = "pgvector", marker = "extra == 'vector'", specifier = ">=0.3" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'all'", specifier = ">=3.1" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'vector'", specifier = ">=3.1" },
+    { name = "pyarrow", marker = "extra == 'all'", specifier = ">=15" },
+    { name = "pyarrow", marker = "extra == 'data'", specifier = ">=15" },
     { name = "pypdf", marker = "extra == 'all'", specifier = ">=4.0" },
     { name = "pypdf", marker = "extra == 'data'", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

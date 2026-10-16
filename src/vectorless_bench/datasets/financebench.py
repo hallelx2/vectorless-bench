@@ -66,6 +66,15 @@ class FinanceBenchDataset(Dataset):
         self._rows: Optional[List[Dict[str, Any]]] = None
         self._needed_docs: set[str] = set()
 
+    def fetch(self) -> None:
+        """Download the filings (scripts/download_financebench.py)."""
+        import subprocess
+        import sys as _sys
+
+        script = Path(__file__).resolve().parents[3] / "scripts" / "download_financebench.py"
+        subprocess.run([_sys.executable, str(script), "--docs-dir", str(self.docs_dir),
+                        "--hf-name", self.hf_name, "--split", self.split], check=True)
+
     def _load_rows(self) -> List[Dict[str, Any]]:
         if self._rows is not None:
             return self._rows

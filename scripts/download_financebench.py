@@ -66,7 +66,9 @@ def main() -> int:
             # keep the original PDF (PageIndex parses it with its own pipeline)
             (docs_dir / f"{name}.pdf").write_bytes(resp.content)
             reader = PdfReader(io.BytesIO(resp.content))
-            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            # Pages separated by a form feed, so the dataset check can tell
+            # whether a gold page number holds its gold evidence.
+            text = "\f".join(page.extract_text() or "" for page in reader.pages)
             out.write_text(text, encoding="utf-8")
             ok += 1
             print(f"  ok: {name} ({len(reader.pages)} pages)")
