@@ -36,7 +36,7 @@ out_dir: runs
 model: gemini-3.5-flash-lite            # vectorless retrieval + full_context + pageindex nav
 embedding_model: gemini-embedding-2
 judge: false                       # set true to add the answer-quality axis
-judge_model: gemini-3.5-flash-lite
+judge_model: jev-latest
 gen_model: gemini-3.5-flash-lite
 
 system_params:

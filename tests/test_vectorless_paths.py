@@ -146,3 +146,82 @@ def test_system_without_paths_is_distinguishable_from_a_wrong_path():
     m = citation_metrics([_sec([], "x")], gold)   # a chunk system
     assert m["gold_has_path"] == 1.0              # the corpus could score it
     assert m["path_coverage"] == 0.0              # the system could not be scored
+
+
+def test_corpus_question_goes_to_corpus_mode_without_its_gold_documents():
+    """A MultiHop question is asked over every ingested document; the gold
+    document ids (which say where the answer is) are never sent."""
+    from types import SimpleNamespace as NS
+
+    from vectorless_bench.datasets.base import CORPUS
+    from vectorless_bench.retrievers.vectorless import VectorlessRetriever
+    from vectorless_bench.schema import Question
+
+    sent = {}
+
+    class _Client:
+        def query_corpus(self, query, **kw):
+            sent.update(kw, query=query)
+            return NS(
+                evidence=[NS(document_id="srv_b", document_title="BizWire", section_title="", page=1,
+                             text="Acme revenue was 10 billion", confidence=0.93, hop=1)],
+                hops=[NS(read=["srv_b", "srv_a"])], coverage=0.81, documents_considered=3,
+                judge_requests=7, errors=None, strategy="corpus", elapsed_ms=4100, timing=None,
+                usage=NS(input_tokens=1000, output_tokens=0, total_tokens=1000, cost_usd=0.00004, llm_calls=7),
+            )
+
+    r = VectorlessRetriever.__new__(VectorlessRetriever)
+    r.name, r._client, r.max_hops, r.server_cache_disabled = "vectorless", _Client(), 2, True
+    r._doc_ids = {"a": "srv_a", "b": "srv_b", "c": "srv_c"}
+    q = Question(qid="q1", doc_id=CORPUS, question="Did both outlets report 10 billion?",
+                 meta={"doc_ids": ["a", "b"]})
+    res = r.retrieve(q, k=5)
+
+    assert sorted(sent["document_ids"]) == ["srv_a", "srv_b", "srv_c"], "every ingested document, not the gold ones"
+    assert sent["max_evidence"] == 5 and sent["max_hops"] == 2
+    assert res.error is None and res.sections[0].section_id == "b#p1" and res.sections[0].score == 0.93
+    assert res.trace["mode"] == "corpus" and res.trace["coverage"] == 0.81
+    assert res.trace["documents_read"] == ["b", "a"]
+    assert res.usage.cost_usd == 0.00004 and res.latency_ms == 4100.0
+
+
+def test_setup_ingests_concurrently_and_counts_reused_documents():
+    import threading
+    import time
+    from types import SimpleNamespace as NS
+
+    from vectorless_bench.retrievers.vectorless import VectorlessRetriever
+    from vectorless_bench.schema import Doc
+
+    lock = threading.Lock()
+    state = {"in_flight": 0, "peak": 0, "keys": []}
+
+    class _Client:
+        def version(self):
+            return NS(version="dev-test")
+
+        def ingest_document(self, source, filename, content_type, idempotency_key=None):
+            with lock:
+                state["keys"].append(idempotency_key)
+                state["in_flight"] += 1
+                state["peak"] = max(state["peak"], state["in_flight"])
+            time.sleep(0.05)
+            with lock:
+                state["in_flight"] -= 1
+            return NS(document_id="srv_" + filename)
+
+        def wait_for_ready(self, doc_id, timeout):
+            old = doc_id.endswith("d0.md")  # one document an earlier run ingested
+            return NS(created_at="2020-01-01T00:00:00Z" if old else "2999-01-01T00:00:00Z")
+
+        def get_document_tree(self, doc_id):
+            return NS(sections=[])
+
+    r = VectorlessRetriever.__new__(VectorlessRetriever)
+    r._client, r.ingest_concurrency, r.reuse_documents, r.ingest_timeout = _Client(), 4, True, 5
+    r._doc_ids, r._paths, r.setup_usage = {}, {}, None
+    r.setup([Doc(doc_id=f"d{i}", title="t", content=f"body {i}") for i in range(8)])
+    assert state["peak"] > 1, "ingest must run concurrently"
+    assert len(r._doc_ids) == 8 and r._doc_ids["d3"] == "srv_d3.md"
+    assert all(k and k.startswith("vlbench-") for k in state["keys"]) and len(set(state["keys"])) == 8
+    assert r.setup_meta["reused_documents"] == 1 and r.setup_meta["ingest_concurrency"] == 4

@@ -75,6 +75,8 @@ class BM25Retriever:
                 content=self._chunks[i].text,
                 section_id=self._chunks[i].chunk_id,
                 score=float(scores[i]),
+                doc_id=self._chunks[i].doc_id,
+                char_start=self._chunks[i].start,
             )
             for i in ranked
         ]

@@ -22,6 +22,14 @@ Two engine-specific details handled here:
    manifest will carry a warning. We do NOT salt queries by default because that
    changes the model's input and contaminates the comparison.
 
+3. A corpus-level question (MultiHop-RAG: the evidence is in 2-4 of 609
+   articles and nobody says which) goes to the engine's corpus mode,
+   `query_corpus`, over EVERY document this run ingested. The question's
+   own gold document ids are never passed: they would tell the engine where
+   the answer is. The merged evidence pages come back tagged with their
+   engine document, which is mapped back to the dataset's id; coverage, the
+   hops and the documents read are kept in the trace.
+
 Cost comes straight from the engine's `usage` field (already priced with the
 same table), so Vectorless numbers need no re-estimation.
 """
@@ -32,6 +40,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from ..datasets.base import CORPUS
 from ..pricing import compute
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
@@ -100,6 +109,9 @@ class VectorlessRetriever:
         server_cache_disabled: bool = False,
         ingest_timeout: float = 600.0,
         query_timeout: float = 300.0,
+        max_hops: Optional[int] = None,
+        ingest_concurrency: int = 8,
+        reuse_documents: bool = False,
         **_: object,
     ) -> None:
         try:
@@ -121,6 +133,16 @@ class VectorlessRetriever:
         self.model = model
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
+        self.max_hops = max_hops  # corpus mode only; None takes the engine's default (3)
+        # Documents uploaded at once. Ingest is the engine's work, so setup is
+        # timed as wall clock over the whole corpus whatever this is.
+        self.ingest_concurrency = max(1, int(ingest_concurrency))
+        # Reuse a document an earlier run ingested (content-hash idempotency
+        # key) and keep documents at teardown. Saves re-ingesting a 609-article
+        # corpus per run; the setup record counts reused documents, so their
+        # ingest is never reported as fast.
+        self.reuse_documents = reuse_documents
+        self.setup_meta: Dict[str, object] = {}
         self.server_cache_disabled = server_cache_disabled
         self.ingest_timeout = ingest_timeout
         self.setup_seconds = 0.0
@@ -139,34 +161,52 @@ class VectorlessRetriever:
         except Exception as e:  # pragma: no cover - network
             self.engine_version = {"version": None, "error": str(e)}
 
-        t0 = time.perf_counter()
-        for d in corpus:
+        import hashlib
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path as _P
+
+        def ingest(d: Doc):
             # Hand the engine the original PDF when the dataset has one: its
             # page-based pipeline (parser, table of contents, page
             # resolution, judgewalk) only exists for paged documents. The
             # pre-extracted text is what the OTHER systems chunk; giving it
             # to Vectorless would benchmark a different engine.
             if d.path and d.path.lower().endswith(".pdf"):
-                from pathlib import Path as _P
-                resp = self._client.ingest_document(
-                    source=_P(d.path).read_bytes(),
-                    filename=f"{d.doc_id}.pdf",
-                    content_type="application/pdf",
-                )
+                body, name, ctype = _P(d.path).read_bytes(), f"{d.doc_id}.pdf", "application/pdf"
             else:
-                resp = self._client.ingest_document(
-                    source=d.content.encode("utf-8"),
-                    filename=f"{d.doc_id}.md",
-                    content_type=d.content_type,
-                )
+                body, name, ctype = d.content.encode("utf-8"), f"{d.doc_id}.md", d.content_type
+            key = None
+            if self.reuse_documents:
+                key = "vlbench-" + hashlib.sha256(name.encode() + b"\0" + body).hexdigest()[:40]
+            resp = self._client.ingest_document(source=body, filename=name, content_type=ctype,
+                                                idempotency_key=key)
             doc_id = resp.document_id
-            self._client.wait_for_ready(doc_id, timeout=self.ingest_timeout)
-            self._doc_ids[d.doc_id] = doc_id
-            self._paths[d.doc_id] = self._build_path_index(doc_id)
+            doc = self._client.wait_for_ready(doc_id, timeout=self.ingest_timeout)
+            # An idempotent replay returns the original response, so reuse is
+            # read from the document's own creation time, not the status.
+            reused = False
+            if self.reuse_documents:
+                created = _parse_time(getattr(doc, "created_at", "") or "")
+                reused = created is not None and created < started_at
+            return d.doc_id, doc_id, reused
+
+        from datetime import datetime, timezone
+
+        started_at = datetime.now(timezone.utc)
+        t0 = time.perf_counter()
+        reused = 0
+        with ThreadPoolExecutor(max_workers=self.ingest_concurrency) as pool:
+            for logical, doc_id, was_reused in pool.map(ingest, corpus):
+                self._doc_ids[logical] = doc_id
+                reused += int(was_reused)
+        for logical, doc_id in self._doc_ids.items():
+            self._paths[logical] = self._build_path_index(doc_id)
+        self.setup_meta = {"documents": len(corpus), "ingest_concurrency": self.ingest_concurrency,
+                           "reused_documents": reused}
         self.setup_seconds = time.perf_counter() - t0
 
     def teardown(self) -> None:  # pragma: no cover - network
-        for doc_id in self._doc_ids.values():
+        for doc_id in ([] if self.reuse_documents else self._doc_ids.values()):
             try:
                 self._client.delete_document(doc_id)
             except Exception:
@@ -258,6 +298,8 @@ class VectorlessRetriever:
 
     # -- query -------------------------------------------------------------
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
+        if question.doc_id == CORPUS:
+            return self._retrieve_corpus(question, k, cold)
         server_doc = self._doc_ids.get(question.doc_id)
         if server_doc is None:
             return RetrievalResult(
@@ -329,6 +371,56 @@ class VectorlessRetriever:
             },
         )
 
+    def _retrieve_corpus(self, question: Question, k: int, cold: bool) -> RetrievalResult:
+        """A question over the whole collection, through corpus mode."""
+        if not self._doc_ids:
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question,
+                                   error="no documents were ingested", cold=cold)
+        logical = {v: k_ for k_, v in self._doc_ids.items()}
+        try:
+            resp = self._client.query_corpus(
+                question.question,
+                document_ids=list(self._doc_ids.values()),
+                max_evidence=k,
+                max_hops=self.max_hops,
+            )
+        except Exception as e:  # pragma: no cover - network
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question,
+                                   error=str(e), cold=cold)
+        sections: List[RetrievedSection] = []
+        for ev in resp.evidence or []:
+            doc = logical.get(ev.document_id, ev.document_id)
+            sections.append(RetrievedSection(
+                content=ev.text or "",
+                section_id=f"{doc}#p{ev.page}",
+                title=ev.document_title or ev.section_title or doc,
+                page=ev.page or None,
+                score=ev.confidence,
+                doc_id=doc,
+            ))
+        read = [logical.get(d, d) for h in (resp.hops or []) for d in (h.read or [])]
+        return RetrievalResult(
+            qid=question.qid,
+            system=self.name,
+            query=question.question,
+            sections=sections,
+            usage=self._usage_from(resp),
+            latency_ms=float(resp.elapsed_ms or 0),
+            strategy=resp.strategy or "corpus",
+            cold=cold,
+            trace={
+                "server_cache_disabled": self.server_cache_disabled,
+                "mode": "corpus",
+                "coverage": resp.coverage,
+                "hops": len(resp.hops or []),
+                "documents_considered": resp.documents_considered,
+                "documents_read": read,
+                "judge_requests": resp.judge_requests,
+                "errors": dict(resp.errors or {}),
+                "timing": _dump(getattr(resp, "timing", None)),
+            },
+        )
+
     def _usage_from(self, resp: object) -> Usage:
         u = getattr(resp, "usage", None)
         if u is None:
@@ -345,6 +437,16 @@ class VectorlessRetriever:
             cost_usd=cost,
             llm_calls=int(getattr(u, "llm_calls", 1) or 1),
         )
+
+
+def _parse_time(s: str):
+    """An RFC 3339 timestamp from the engine, or None."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _dump(obj: object):

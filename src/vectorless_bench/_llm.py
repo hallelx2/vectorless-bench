@@ -74,6 +74,19 @@ def _wait_cooldown() -> None:
         _t.sleep(min(left, 5.0))
 
 
+def _busy(e: Exception) -> bool:
+    """A refusal for load: decided by the API error's status code, and only
+    for an error with no code by its text. A permanent 400 whose message
+    happens to contain "429" (a token count, a request id) is not retried."""
+    code = getattr(e, "code", None)
+    if code is None:
+        code = getattr(e, "status_code", None)
+    if isinstance(code, int):
+        return code in (429, 503)
+    msg = str(e)
+    return "RESOURCE_EXHAUSTED" in msg or "UNAVAILABLE" in msg
+
+
 def project() -> str:
     p = os.environ.get("VLBENCH_GCP_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT") or ""
     if not p:
@@ -214,8 +227,7 @@ def generate(
                 )
             break
         except Exception as e:
-            msg = str(e)
-            busy = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg
+            busy = _busy(e)
             if not busy or retries >= _MAX_RETRIES:
                 raise
             retries += 1

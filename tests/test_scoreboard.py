@@ -1,0 +1,53 @@
+"""The scoreboard folds run directories into one board (HAL-3088)."""
+
+import json
+from pathlib import Path
+
+from vectorless_bench.scoreboard import build, collect
+
+
+def _run(root: Path, name: str, dataset: str, created: str, rows, k: int = 5) -> Path:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(json.dumps({"dataset": dataset, "k": k, "created_at": created,
+                                                 "bench_git_sha": "abc123", "model": "gemini-3.5-flash-lite",
+                                                 "extra": {"engine_versions": {"vectorless": {"version": "dev-1"}}}}))
+    (d / "records.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    return d
+
+
+def _rec(system, qid, hit, cost, ms, domain="comparison", native=None):
+    m = {"hit@5": hit, "recall@5": hit, "f1@5": hit, "mrr": hit, "ndcg@5": hit, "gold_reachable": 1.0}
+    if native is not None:
+        m["native_hits@5"] = native
+    return {"qid": qid, "system": system, "repeat": 0, "domain": domain, "answer_type": "multihop",
+            "difficulty": "medium", "latency_ms": ms, "wall_ms": ms, "phase": "latency", "flagged": False,
+            "attempts": 1, "usage": {"cost_usd": cost, "total_tokens": 10, "llm_calls": 1}, "metrics": m}
+
+
+def test_scoreboard_keeps_the_latest_run_and_writes_every_output(tmp_path):
+    old = _run(tmp_path, "r1", "multihop_rag", "2026-10-16T10:00:00",
+               [_rec("vectorless", "q1", 0.0, 0.01, 900)])
+    new = _run(tmp_path, "r2", "multihop_rag", "2026-10-16T12:00:00",
+               [_rec("vectorless", "q1", 1.0, 0.02, 1500, native=0.5), _rec("bm25", "q1", 0.0, 0.0, 40, native=0.0),
+                _rec("vectorless", "q2", 1.0, 0.02, 1700, domain="temporal", native=1.0)])
+    board = collect([old, new])
+    assert board["multihop_rag"]["vectorless"]["run"] == str(new)
+    info = build([old, new], tmp_path / "out")
+    assert info == {"datasets": 1, "rows": 2, "out": str(tmp_path / "out")}
+    md = (tmp_path / "out" / "scoreboard.md").read_text()
+    assert "## multihop_rag" in md and "Vectorless" in md and "hits@5" in md
+    assert "By query type" in md and "temporal" in md
+    assert "Judge" not in md and "jev" not in md.lower()
+    rows = json.loads((tmp_path / "out" / "scoreboard.json").read_text())["rows"]
+    v = next(r for r in rows if r["system"] == "vectorless")
+    assert v["quality"] == 1.0 and v["native"] == 0.75 and v["usd_per_question"] == 0.02
+    assert (tmp_path / "out" / "scoreboard.csv").read_text().startswith("dataset,system")
+    assert "<circle" in (tmp_path / "out" / "quality_vs_cost.svg").read_text()
+
+
+def test_an_unmeasured_cell_is_empty_not_zero(tmp_path):
+    d = _run(tmp_path, "r", "financebench", "2026-10-16T10:00:00", [_rec("bm25", "q", 1.0, 0.0, 30)])
+    build([d], tmp_path / "o")
+    row = json.loads((tmp_path / "o" / "scoreboard.json").read_text())["rows"][0]
+    assert row["native"] is None and row["answer_accuracy"] is None and row["questions_per_minute"] is None

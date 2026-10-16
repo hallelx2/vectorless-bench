@@ -166,3 +166,197 @@ def test_embedding_cache_is_per_document_and_keeps_measured_seconds(monkeypatch,
     assert len(calls) == first and r2.setup_meta["embedding_cache_hits"] == 1
     assert r2.setup_usage.cost_usd > 0, "a cache hit still prices the ingest"
     assert "embedding_seconds_measured" in r2.setup_meta
+
+
+def test_pageindex_pages_from_tool_arguments():
+    from vectorless_bench.retrievers.pageindex import _pages_from
+
+    assert _pages_from({"pages": "5-7"}) == [5, 6, 7]
+    assert _pages_from({"page": 12}) == [12]
+    assert _pages_from({"start_page": 3, "end_page": 4}) == [3, 4]
+    assert _pages_from({"page_numbers": [9, 2, 9]}) == [2, 9]
+    assert _pages_from({"node_id": "0007"}) == []
+
+
+def test_pageindex_times_retrieval_to_the_first_answer_token(monkeypatch):
+    import time as _t
+    from vectorless_bench.retrievers import pageindex as pi
+
+    events = [
+        {"type": "tool_call", "call_id": "1", "name": "get_document_structure", "arguments": {}},
+        {"type": "tool_result", "call_id": "1", "name": "get_document_structure", "output": "tree"},
+        {"type": "tool_call", "call_id": "2", "name": "get_page_content", "arguments": {"pages": "40-41"}},
+        {"type": "tool_result", "call_id": "2", "name": "get_page_content", "output": "capex was 1,577"},
+        {"type": "answer", "delta": "Capex was "},
+        {"type": "answer", "delta": "$1,577 million."},
+    ]
+
+    class _Stream:
+        @property
+        def events(self):
+            for i, e in enumerate(events):
+                if e["type"] == "tool_call":
+                    pi._SINK.add("vertex_ai/gemini-3.5-flash-lite", 100, 10, 0, 0.1)
+                if i == 5:
+                    pi._SINK.add("vertex_ai/gemini-3.5-flash-lite", 50, 20, 0, 0.1)  # the answer's own call
+                    _t.sleep(0.02)
+                yield e
+
+    class _Client:
+        def chat(self, q, doc_id, stream):
+            return _Stream()
+
+    r = pi.PageIndexRetriever.__new__(pi.PageIndexRetriever)
+    r._client, r._doc_ids = _Client(), {"d": "pi-1"}
+    res = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=5)
+    assert res.error is None and len(res.sections) == 1 and res.sections[0].page == 40
+    assert res.trace["pages_read"] == [40, 41]
+    assert res.trace["total_ms"] >= res.trace["retrieval_ms"] and abs(res.latency_ms - res.trace["retrieval_ms"]) < 0.1
+    assert res.usage.llm_calls == 2 and res.trace["llm_calls"] == 3, "the answer call is kept apart"
+    assert res.trace["answer_cost_usd"] > 0
+
+
+def test_pageindex_usage_is_charged_per_call_even_late_and_concurrent():
+    import threading
+    import time as _t
+    from vectorless_bench.retrievers import pageindex as pi
+    from vectorless_bench.schema import Usage
+
+    sink = pi._UsageSink()
+    a, b = Usage(), Usage()
+
+    def operation(target, call_id, delay):
+        token = sink.enter(target)
+        sink.begin(call_id)  # the pre-call hook, on the caller's thread
+
+        def late():  # LiteLLM's success callback, on a background thread
+            _t.sleep(delay)
+            sink.add("vertex_ai/gemini-3.5-flash-lite", 100, 10, 0, 0.5, call_id=call_id)
+
+        threading.Thread(target=late).start()
+        assert sink.exit(target, token), "exit waits for the call to report"
+
+    ta = threading.Thread(target=operation, args=(a, "call-a", 0.05))
+    tb = threading.Thread(target=operation, args=(b, "call-b", 0.01))
+    ta.start(); tb.start(); ta.join(); tb.join()
+    assert a.llm_calls == 1 and b.llm_calls == 1, (a, b)
+    assert sink.orphans == 0
+
+
+def test_pageindex_does_not_sleep_after_the_last_attempt(monkeypatch):
+    from vectorless_bench.retrievers import pageindex as pi
+
+    assert pi._rate_limited(type("E", (Exception,), {"status_code": 429})())
+    assert not pi._rate_limited(type("E", (Exception,), {"status_code": 400})("tokens 429 in text"))
+    assert pi._rate_limited(Exception("RESOURCE_EXHAUSTED: quota"))
+
+
+def test_pageindex_reports_corpus_questions_as_not_applicable():
+    from vectorless_bench.datasets.base import CORPUS
+    from vectorless_bench.retrievers import pageindex as pi
+
+    r = pi.PageIndexRetriever.__new__(pi.PageIndexRetriever)
+    r._doc_ids = {}
+    res = r.retrieve(Question(qid="q", doc_id=CORPUS, question="?"), k=5)
+    assert res.error.startswith("n/a:")
+
+
+def test_llm_retries_by_status_code_not_by_digits_in_the_text():
+    from vectorless_bench._llm import _busy
+
+    class E(Exception):
+        def __init__(self, code, msg):
+            super().__init__(msg)
+            self.code = code
+
+    assert _busy(E(429, "Resource exhausted"))
+    assert _busy(E(503, "unavailable"))
+    assert not _busy(E(400, "prompt has 4290 tokens; request 503-abc"))
+    assert _busy(Exception("RESOURCE_EXHAUSTED"))  # no code: the text is the fallback
+
+
+def test_jev_rejects_a_missing_or_unoffered_verdict(monkeypatch):
+    import io, json as _j
+    import pytest
+    from vectorless_bench import jev as jevmod
+
+    def reply(body):
+        class _R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return lambda req, timeout=0: _R(_j.dumps(body).encode())
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    q = {"verdict": ("grade it", [("correct", "c"), ("incorrect", "i")])}
+    j = jevmod.Jev()
+    monkeypatch.setattr(jevmod.urllib.request, "urlopen", reply({"answers": {}}))
+    with pytest.raises(RuntimeError, match="no answer"):
+        j.choose({}, q)
+    monkeypatch.setattr(jevmod.urllib.request, "urlopen", reply({"answers": {"verdict": {"choice": "maybe"}}}))
+    with pytest.raises(RuntimeError, match="not one of the offered"):
+        j.choose({}, q)
+
+
+def test_full_context_charges_a_cache_to_its_expiry_and_charges_a_replaced_one(monkeypatch):
+    from vectorless_bench.schema import Usage
+    import time as _t
+    from vectorless_bench.retrievers import full_context as fc
+
+    monkeypatch.setattr(fc, "genai_client", lambda: type("C", (), {"caches": type("K", (), {"delete": staticmethod(lambda name: None)})()})())
+    r = fc.FullContextRetriever.__new__(fc.FullContextRetriever)
+    import threading
+    r.model, r.setup_usage, r._cache_lock, r._caches = "gemini-3.5-flash-lite", Usage(), threading.Lock(), {}
+    r._refs, r._retired, r._doc_locks = {}, {}, {}
+    now = _t.time()
+    # created 3 h ago, expired after 1 h: billed 1 h, not 3
+    r._retire({"name": "c", "created": now - 3 * 3600, "expires": now - 2 * 3600, "tokens": 1_000_000})
+    rate = fc._STORAGE_PER_MTOK_HOUR["default"]
+    assert abs(r.setup_usage.cost_usd - rate) < 1e-9
+
+
+def test_raptor_charges_concurrent_queries_to_their_own_usage():
+    from vectorless_bench.schema import Usage
+    import threading
+    from vectorless_bench.retrievers.raptor import RaptorRetriever
+
+    r = RaptorRetriever.__new__(RaptorRetriever)
+    r._target, r.setup_usage = threading.local(), Usage()
+    a, b = Usage(), Usage()
+    seen = {}
+
+    def query(u, name):
+        r._target.usage = u
+        seen[name] = getattr(r._target, "usage", None) is u
+
+    ta, tb = threading.Thread(target=query, args=(a, "a")), threading.Thread(target=query, args=(b, "b"))
+    ta.start(); tb.start(); ta.join(); tb.join()
+    assert seen == {"a": True, "b": True}
+    assert getattr(r._target, "usage", None) is None  # the main thread is charged to setup
+
+
+
+def test_a_replaced_cache_is_kept_until_its_last_user_releases_it(monkeypatch):
+    import threading
+    import time as _t
+    from vectorless_bench.retrievers import full_context as fc
+    from vectorless_bench.schema import Usage
+
+    deleted = []
+    monkeypatch.setattr(fc, "genai_client", lambda: type("C", (), {"caches": type("K", (), {
+        "delete": staticmethod(lambda name: deleted.append(name))})()})())
+    r = fc.FullContextRetriever.__new__(fc.FullContextRetriever)
+    r.model, r.setup_usage, r._cache_lock, r._caches = "gemini-3.5-flash-lite", Usage(), threading.Lock(), {}
+    r._refs, r._retired, r._doc_locks = {"old": 1}, {}, {}  # a request is still using "old"
+    now = _t.time()
+    r._retire({"name": "old", "created": now - 60, "expires": now + 3000, "tokens": 1000})
+    assert deleted == [], "a cache still in use must not be deleted"
+    r._release("old")
+    assert deleted == ["old"]
+
+
+def test_a_chunk_offset_points_at_its_own_text():
+    from vectorless_bench.retrievers._chunk import chunk_doc
+
+    text = "  lead space.\n\n   " + " ".join(f"w{i}" for i in range(2000))
+    for c in chunk_doc(Doc(doc_id="d", title="d", content=text), 100, 10):
+        assert text[c.start:c.start + len(c.text)] == c.text

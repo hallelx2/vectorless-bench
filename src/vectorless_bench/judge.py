@@ -70,6 +70,9 @@ class JudgeResult:
     verdict: str = ""
     verdict_repeat: Optional[str] = None
     confidence: Optional[float] = None
+    # The answer the shared model wrote from the retrieved passages, kept for
+    # the dataset-native answer metrics (QASPER F1, CUAD clause match).
+    candidate: Optional[str] = None
 
 
 def _sampled(qid: str, rate: float = 0.10) -> bool:
@@ -99,10 +102,10 @@ class Judge:
         if question.is_no_answer:
             # correct behaviour is to decline; reward INSUFFICIENT
             ok = 1.0 if declined else 0.0
-            return JudgeResult(correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
+            return JudgeResult(candidate=candidate, correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
                                verdict="abstained" if declined else "answered_unanswerable")
         if declined:
-            return JudgeResult(correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
+            return JudgeResult(candidate=candidate, correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
 
         if self._jev is None:
             return self._legacy(question, candidate, usage)
@@ -117,7 +120,7 @@ class Judge:
             again, ju2, _ = self._jev.choose(state, q)
             usage.add(ju2)
             repeat = again["verdict"].choice
-        return JudgeResult(
+        return JudgeResult(candidate=candidate, 
             correct=1.0 if v.choice == "correct" else (0.5 if v.choice == "partially_correct" else 0.0),
             faithful=1.0 if v.choice in ("correct", "partially_correct") else 0.0,
             answered=0.0 if v.choice == "abstained" else 1.0,
@@ -133,5 +136,5 @@ class Judge:
             v = json.loads(verdict.text)
         except json.JSONDecodeError:
             v = {"correct": False, "faithful": False}
-        return JudgeResult(correct=1.0 if v.get("correct") else 0.0, faithful=1.0 if v.get("faithful") else 0.0,
+        return JudgeResult(candidate=candidate, correct=1.0 if v.get("correct") else 0.0, faithful=1.0 if v.get("faithful") else 0.0,
                            answered=1.0, usage=usage, verdict="legacy")

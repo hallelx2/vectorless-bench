@@ -53,19 +53,28 @@ def main() -> int:
     ok = skipped = failed = 0
     for name in doc_names:
         out = docs_dir / f"{name}.txt"
-        if out.exists():
+        pdf = docs_dir / f"{name}.pdf"
+        if out.exists() and "\f" in out.read_text(encoding="utf-8", errors="ignore"):
             skipped += 1
             continue
+        # A text file from before page breaks were kept (pages joined by blank
+        # lines) cannot place a gold page: rebuild it, from the PDF on disk
+        # when there is one.
         url = f"{RAW_BASE}/{name}.pdf"
         try:
-            resp = requests.get(url, timeout=120)
-            if resp.status_code != 200:
-                print(f"  MISSING ({resp.status_code}): {name}")
-                failed += 1
-                continue
-            # keep the original PDF (PageIndex parses it with its own pipeline)
-            (docs_dir / f"{name}.pdf").write_bytes(resp.content)
-            reader = PdfReader(io.BytesIO(resp.content))
+            if pdf.exists():
+                content = pdf.read_bytes()
+            else:
+                resp = requests.get(url, timeout=120)
+                if resp.status_code != 200:
+                    print(f"  MISSING ({resp.status_code}): {name}")
+                    failed += 1
+                    continue
+                content = resp.content
+            reader = PdfReader(io.BytesIO(content))  # parse first: a broken download is never cached
+            if not pdf.exists():
+                # keep the original PDF (PageIndex parses it with its own pipeline)
+                pdf.write_bytes(content)
             # Pages separated by a form feed, so the dataset check can tell
             # whether a gold page number holds its gold evidence.
             text = "\f".join(page.extract_text() or "" for page in reader.pages)

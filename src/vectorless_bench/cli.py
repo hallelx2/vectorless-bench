@@ -71,6 +71,22 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scoreboard(args: argparse.Namespace) -> int:
+    """Fold run directories into the published scoreboard."""
+    from .scoreboard import build
+
+    dirs = []
+    for p in args.runs:
+        path = Path(p)
+        if (path / "records.jsonl").exists():
+            dirs.append(path)
+        else:  # a parent of run directories
+            dirs.extend(sorted(d for d in path.glob("**/") if (d / "records.jsonl").exists()))
+    info = build(dirs, Path(args.out))
+    print(f"[vlbench] scoreboard: {info['rows']} rows over {info['datasets']} datasets -> {info['out']}")
+    return 0
+
+
 def cmd_systems(_: argparse.Namespace) -> int:
     from .retrievers import available
 
@@ -104,8 +120,8 @@ def cmd_datasets(args: argparse.Namespace) -> int:
     params = _json.loads(args.params) if args.params else {}
     status = 0
     for name in names:
-        d = build_dataset(name, **params)
         try:
+            d = build_dataset(name, **params)
             if args.action == "fetch":
                 d.fetch()
             else:
@@ -183,6 +199,11 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("run_dir")
     rep.add_argument("--k", type=int, default=5)
     rep.set_defaults(func=cmd_report)
+
+    sb = sub.add_parser("scoreboard", help="fold run directories into the published scoreboard")
+    sb.add_argument("runs", nargs="+", help="run directories, or directories that contain them")
+    sb.add_argument("--out", default="scoreboard", help="output directory")
+    sb.set_defaults(func=cmd_scoreboard)
 
     s = sub.add_parser("systems", help="list available systems and datasets")
     s.set_defaults(func=cmd_systems)

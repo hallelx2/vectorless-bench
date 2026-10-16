@@ -68,8 +68,15 @@ class Jev:
             time.sleep(delay * (0.5 + random.random()))
             delay = min(delay * 2, 20.0)
         answers: Dict[str, ChoiceAnswer] = {}
-        for qid, a in (data.get("answers") or {}).items():
-            answers[qid] = ChoiceAnswer(choice=str(a.get("choice", "")), probabilities=a.get("probabilities") or {},
+        got = data.get("answers") or {}
+        for qid, (_, opts) in questions.items():
+            a = got.get(qid)
+            if not isinstance(a, dict):
+                raise RuntimeError(f"jev: no answer for {qid!r}")
+            choice = str(a.get("choice", ""))
+            if choice not in {k for k, _ in opts}:
+                raise RuntimeError(f"jev: {qid!r} answered {choice!r}, not one of the offered options")
+            answers[qid] = ChoiceAnswer(choice=choice, probabilities=a.get("probabilities") or {},
                                         confidence=a.get("confidence"))
         u = data.get("usage") or {}
         model = str(data.get("model") or self.model)
