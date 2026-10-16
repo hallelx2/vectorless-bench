@@ -133,6 +133,11 @@ class RetrievedSection:
     # spans); per-document systems may leave it empty, and the scorer then
     # takes the question's own document.
     doc_id: str = ""
+    # Where the unit starts in its document's text, when the system knows
+    # (chunk systems cut the text themselves). Character-span metrics use it
+    # instead of searching for the text, which is ambiguous when a passage
+    # repeats.
+    char_start: Optional[int] = None
 
 
 @dataclass

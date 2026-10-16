@@ -12,8 +12,10 @@ number can be set beside the published ones.
   paragraph is retrieved when its text is in a returned unit.
 - LegalBench-RAG (Pipitone & Alami 2024): character-level precision and
   recall at k, from the overlap between the returned units, located in their
-  source file, and the gold character spans. A unit that cannot be located
-  in the file still counts against precision.
+  source file, and the gold character spans. A unit carries its offset when
+  the system cut it (the chunk systems); otherwise its text is searched for,
+  and a passage that appears twice is taken at its first occurrence. A unit
+  that cannot be located still counts against precision.
 - CUAD (Hendrycks et al. 2021): a predicted clause matches when its token
   Jaccard with a gold span is at least 0.5, the CUAD evaluation's rule; a
   no-clause question is right when the answer abstains. CUAD scores an
@@ -183,7 +185,14 @@ class NativeScorer:
         for s in top:
             doc = s.doc_id or q.doc_id
             loc = self._loc(doc)
-            r = loc.find(s.content) if loc else None
+            r = None
+            if loc is not None and s.char_start is not None and s.char_start >= 0:
+                # the system's own offset, checked against the text it claims
+                end = s.char_start + len(s.content)
+                if loc.text[s.char_start:end] == s.content:
+                    r = (s.char_start, end)
+            if r is None and loc is not None:
+                r = loc.find(s.content)
             if r is None:
                 unlocated += 1
                 retrieved_chars += len(s.content.strip())

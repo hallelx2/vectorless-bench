@@ -17,7 +17,10 @@ def test_squad_normalisation_and_token_f1():
 
 
 def _lbr_scorer():
-    text = "0123456789" * 10  # 100 chars
+    import random
+
+    rnd = random.Random(7)
+    text = "".join(rnd.choice("abcdefghijklmnopqrstuvwxyz ") for _ in range(100))  # no repeated windows
     return text, NativeScorer("legalbench_rag", [Doc(doc_id="f.txt", title="f", content=text)])
 
 
@@ -117,3 +120,16 @@ def test_qasper_loader_answer_strings():
     assert _answer_string({"yes_no": False}) == "no"
     assert _answer_string({"free_form_answer": " BERT "}) == "BERT"
     assert _answer_string({"free_form_answer": "", "extractive_spans": ["a", "b"]}) == "a, b"
+
+
+def test_a_chunk_offset_wins_over_searching_repeated_text():
+    text = "boilerplate. " * 4 + "the fee is ten dollars. " + "boilerplate. " * 4
+    s = NativeScorer("legalbench_rag", [Doc(doc_id="d", title="d", content=text)])
+    second = text.index("boilerplate.", 13)
+    q = Question(qid="q", doc_id="d", question="?", meta={"spans": [("d", [second, second + 12])]})
+    by_search = s.retrieval(q, [RetrievedSection(content="boilerplate.")], k=1)
+    by_offset = s.retrieval(q, [RetrievedSection(content="boilerplate.", char_start=second)], k=1)
+    assert by_search["native_char_recall@1"] == 0.0  # first occurrence, not the gold one
+    assert by_offset["native_char_recall@1"] == 1.0
+    wrong = s.retrieval(q, [RetrievedSection(content="boilerplate.", char_start=3)], k=1)
+    assert wrong["native_units_unlocated"] == 0.0  # a bad offset falls back to searching
