@@ -130,7 +130,17 @@ def cmd_embed(args: argparse.Namespace) -> int:
     names = [n for n in __import__("vectorless_bench.datasets", fromlist=["available"]).available() if n != "fixtures"] \
         if args.name == "all" else [args.name]
     for name in names:
-        corpus = build_dataset(name, **(_json.loads(args.params) if args.params else {})).corpus()
+        params = _json.loads(args.params) if args.params else {}
+        if args.limit:
+            # the runner's own selection, so the cache covers exactly the
+            # documents a `run --limit N --seed S` will ask for
+            from .config import RunConfig
+            from .runner import _load_dataset
+
+            _, corpus, _ = _load_dataset(RunConfig(dataset=name, dataset_params=params, limit=args.limit,
+                                                   sample_seed=args.seed))
+        else:
+            corpus = build_dataset(name, **params).corpus()
         r = VectorRagRetriever(embedding_model=args.model, backend="memory",
                                chunk_tokens=args.chunk_tokens, overlap_tokens=args.overlap_tokens)
         r.setup(corpus)
@@ -189,6 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
     em.add_argument("--chunk-tokens", type=int, default=512)
     em.add_argument("--overlap-tokens", type=int, default=64)
     em.add_argument("--params", help="dataset params as JSON")
+    em.add_argument("--limit", type=int, help="only the documents of `run --limit N` (same sample)")
+    em.add_argument("--seed", type=int, default=0, help="the run's sample seed")
     em.set_defaults(func=cmd_embed)
 
     pr = sub.add_parser("probe", help="host evidence agent (run on the engine VM)")
