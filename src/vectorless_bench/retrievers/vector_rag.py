@@ -66,16 +66,78 @@ class VectorRagRetriever:
             self._openai = OpenAI()
         return self._openai
 
+    def _cached_embed(self, texts: List[str]) -> List[List[float]]:
+        import hashlib
+        import json as _json
+        from pathlib import Path
+
+        key = hashlib.sha256((self.embedding_model + "\x00" + "\x00".join(texts)).encode()).hexdigest()[:24]
+        cache = Path("data/cache") / f"emb-{self.embedding_model.replace('/', '_')}-{key}.json"
+        if cache.exists():
+            self.setup_meta = {"embedding_cache": "hit", "cache_file": str(cache)}
+            return _json.loads(cache.read_text())
+        batch = 128
+        vectors: List[List[float]] = []
+        for i in range(0, len(texts), batch):
+            vectors.extend(self._embed(texts[i : i + batch]))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(vectors))
+        self.setup_meta = {"embedding_cache": "miss", "cache_file": str(cache)}
+        return vectors
+
     def _embed(self, texts: Sequence[str]) -> List[List[float]]:
-        resp = self._client().embeddings.create(
-            model=self.embedding_model, input=list(texts)
-        )
         toks = sum(count_tokens(t, self.embedding_model) for t in texts)
         self.setup_usage.embedding_tokens += toks
         self.setup_usage.cost_usd += compute_embedding(self.embedding_model, toks)
+        if self.embedding_model.startswith("gemini-embedding"):
+            return self._embed_gemini(texts)
+        if "/" in self.embedding_model:  # a Hugging Face id: run it locally
+            return self._embed_local(texts)
+        resp = self._client().embeddings.create(
+            model=self.embedding_model, input=list(texts)
+        )
         return [d.embedding for d in resp.data]
 
-    # -- lifecycle ---------------------------------------------------------
+    def _embed_local(self, texts: Sequence[str]) -> List[List[float]]:
+        """A local sentence-transformers model — BAAI/bge-small-en-v1.5 by
+        default in the FinanceBench config: 384 dimensions, 33M parameters,
+        the standard small English retriever people actually deploy. No
+        network in the baseline's numbers, cost zero by construction, setup
+        time measured and reported like every other system's."""
+        from sentence_transformers import SentenceTransformer  # type: ignore
+
+        if getattr(self, "_local", None) is None:
+            self._local = SentenceTransformer(self.embedding_model)
+        vecs = self._local.encode(list(texts), batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+        return [list(map(float, v)) for v in vecs]
+
+    def _embed_gemini(self, texts: Sequence[str]) -> List[List[float]]:
+        """Gemini embeddings via google-genai. gemini-embedding-2 aggregates a
+        list of plain strings into ONE vector, so each text is wrapped in its
+        own Content — one call then returns one vector per Content (probed
+        2026-09-19: 90 inputs → 90 embeddings). 768 dimensions, one of the
+        three Google recommends; cosine ranking is unaffected."""
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+
+        if getattr(self, "_gemini", None) is None:
+            self._gemini = genai.Client()
+        out: List[List[float]] = []
+        batch = 90
+        for i in range(0, len(texts), batch):
+            chunk = list(texts[i : i + batch])
+            r = self._gemini.models.embed_content(
+                model=self.embedding_model,
+                contents=[types.Content(parts=[types.Part(text=t)]) for t in chunk],
+                config=types.EmbedContentConfig(output_dimensionality=768),
+            )
+            if len(r.embeddings) != len(chunk):
+                raise RuntimeError(
+                    f"gemini returned {len(r.embeddings)} embeddings for {len(chunk)} inputs"
+                )
+            out.extend(list(e.values) for e in r.embeddings)
+        return out
+
     def setup(self, corpus: List[Doc]) -> None:
         import time
 
@@ -85,10 +147,10 @@ class VectorRagRetriever:
                 chunk_doc(d, self.chunk_tokens, self.overlap_tokens)
             )
         # batch embed
-        batch = 128
-        vectors: List[List[float]] = []
-        for i in range(0, len(self._chunks), batch):
-            vectors.extend(self._embed([c.text for c in self._chunks[i : i + batch]]))
+        # Embeddings are cached on disk keyed by model and chunk text, so a
+        # re-run of the bench does not repeat a CPU-hours ingest. The
+        # first, uncached pass is the one whose setup_seconds is reported.
+        vectors = self._cached_embed([c.text for c in self._chunks])
 
         if self.backend == "pgvector":
             self._pg_setup(vectors)
@@ -171,9 +233,13 @@ class VectorRagRetriever:
         )
 
     def _embed_query(self, q: str) -> List[float]:
-        # query embedding cost is tiny; don't fold it into ingest usage
-        resp = self._client().embeddings.create(model=self.embedding_model, input=[q])
-        return resp.data[0].embedding
+        # Same provider as setup — local, Gemini or OpenAI — so a local
+        # model never reaches for an OpenAI client at query time. The
+        # query's tokens are priced by the caller, not folded into ingest.
+        before = self.setup_usage.embedding_tokens, self.setup_usage.cost_usd
+        vec = self._embed([q])[0]
+        self.setup_usage.embedding_tokens, self.setup_usage.cost_usd = before
+        return vec
 
     def _pg_query(self, qvec, doc_id, k):
         # the cosine operator (<=>) appears in both SELECT and ORDER BY, so the

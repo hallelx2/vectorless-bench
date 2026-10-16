@@ -36,6 +36,7 @@ class VectorlessRetriever:
         max_parallel_calls: Optional[int] = None,
         server_cache_disabled: bool = False,
         ingest_timeout: float = 600.0,
+        query_timeout: float = 300.0,
         **_: object,
     ) -> None:
         try:
@@ -46,7 +47,10 @@ class VectorlessRetriever:
                 "pip install vectorless-sdk"
             ) from e
 
-        self._client = VectorlessClient(api_key=api_key, base_url=base_url)
+        # A Judge-navigated query is a few requests to a provider whose
+        # latency swings between seconds and a minute; the SDK's default
+        # 30 s would time out the slow half and score them as errors.
+        self._client = VectorlessClient(api_key=api_key, base_url=base_url, timeout=query_timeout)
         self.model = model
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
@@ -63,11 +67,24 @@ class VectorlessRetriever:
 
         t0 = time.perf_counter()
         for d in corpus:
-            resp = self._client.ingest_document(
-                source=d.content.encode("utf-8"),
-                filename=f"{d.doc_id}.md",
-                content_type=d.content_type,
-            )
+            # Hand the engine the original PDF when the dataset has one: its
+            # page-based pipeline (parser, table of contents, page
+            # resolution, judgewalk) only exists for paged documents. The
+            # pre-extracted text is what the OTHER systems chunk; giving it
+            # to Vectorless would benchmark a different engine.
+            if d.path and d.path.lower().endswith(".pdf"):
+                from pathlib import Path as _P
+                resp = self._client.ingest_document(
+                    source=_P(d.path).read_bytes(),
+                    filename=f"{d.doc_id}.pdf",
+                    content_type="application/pdf",
+                )
+            else:
+                resp = self._client.ingest_document(
+                    source=d.content.encode("utf-8"),
+                    filename=f"{d.doc_id}.md",
+                    content_type=d.content_type,
+                )
             doc_id = resp.document_id
             self._client.wait_for_ready(doc_id, timeout=self.ingest_timeout)
             self._doc_ids[d.doc_id] = doc_id
@@ -136,7 +153,9 @@ class VectorlessRetriever:
 
         path_index = self._paths.get(question.doc_id, {})
         sections: List[RetrievedSection] = []
-        for s in resp.sections:
+        # An abstention is a legitimate answer ("nothing confident enough"),
+        # scored as zero sections — not a transport error.
+        for s in (resp.sections or []):
             sid = str(getattr(s, "id", ""))
             sections.append(
                 RetrievedSection(
@@ -144,7 +163,8 @@ class VectorlessRetriever:
                     section_id=sid,
                     title=getattr(s, "title", "") or "",
                     title_path=path_index.get(sid, []),
-                    score=None,
+                    page=getattr(s, "page", None),
+                    score=getattr(s, "confidence", None),
                 )
             )
 
@@ -161,6 +181,7 @@ class VectorlessRetriever:
             trace={
                 "server_cache_disabled": self.server_cache_disabled,
                 "model": getattr(resp, "model", "") or "",
+                "abstained": bool(getattr(resp, "abstained", False)),
             },
         )
 
