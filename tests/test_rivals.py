@@ -480,3 +480,22 @@ def test_patient_completion_waits_out_a_long_refusal(monkeypatch):
     import pytest
     with pytest.raises(ValueError):
         _llm.complete_patient("m", "s", "u", pause=1)
+
+
+
+def test_raptor_embeddings_wait_out_a_refusal(monkeypatch):
+    from vectorless_bench.retrievers import raptor as rp
+
+    calls = {"n": 0}
+
+    class Busy(Exception):
+        code = 429
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise Busy("RESOURCE_EXHAUSTED")
+        return "vec"
+
+    monkeypatch.setattr(rp.time, "sleep", lambda s: None)
+    assert rp._embed_patient(flaky) == "vec" and calls["n"] == 3
