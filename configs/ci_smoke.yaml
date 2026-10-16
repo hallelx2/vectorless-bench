@@ -17,7 +17,7 @@ k: 5
 repeats: 1
 cold: true
 out_dir: runs
-model: claude-haiku-4-5
+model: gemini-2.5-flash-lite
 system_params:
   mock:
     accuracy: 1.0

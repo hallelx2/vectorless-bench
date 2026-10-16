@@ -24,7 +24,7 @@ class Chunk:
 
 
 def chunk_doc(
-    doc: Doc, chunk_tokens: int = 512, overlap_tokens: int = 64, model: str = "gpt-4o"
+    doc: Doc, chunk_tokens: int = 512, overlap_tokens: int = 64, model: str = ""
 ) -> List[Chunk]:
     """Split a document into overlapping token windows.
 

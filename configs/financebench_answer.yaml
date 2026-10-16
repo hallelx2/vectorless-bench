@@ -41,7 +41,7 @@ embedding_model: gemini-embedding-2
 
 judge: true
 gen_model: gemini-2.5-flash      # the answerer: swap this to compare models on identical retrieved context
-judge_model: gpt-4o              # the grader: hold this FIXED across runs or the numbers stop comparing
+judge_model: gemini-2.5-flash-lite              # the grader: hold this FIXED across runs or the numbers stop comparing
 
 system_params:
   vectorless:

@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# token counting + the LLM-using systems (full_context, judge)
-llm = ["tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39"]
+# the LLM-using systems (full_context, pageindex, agentic rivals, judge): Gemini on Vertex
+llm = ["google-genai>=1.30"]
 # the vector-RAG baseline
-vector = ["openai>=1.40", "psycopg[binary]>=3.1", "pgvector>=0.3", "tiktoken>=0.7"]
+vector = ["google-genai>=1.30", "psycopg[binary]>=3.1", "pgvector>=0.3", "sentence-transformers>=3.0"]
 # the BM25 baseline
 bm25 = ["rank-bm25>=0.2.2"]
 # the system under test
@@ -31,7 +31,7 @@ data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31"]
 viz = ["matplotlib>=3.8"]
 # everything
 all = [
-  "tiktoken>=0.7", "openai>=1.40", "anthropic>=0.39",
+  "google-genai>=1.30", "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
   "vectorless-sdk>=0.1", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31",
   "matplotlib>=3.8",

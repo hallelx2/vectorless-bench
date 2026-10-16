@@ -54,7 +54,7 @@ class PageIndexRetriever:
     def __init__(
         self,
         mode: str = "oss",
-        model: str = "gpt-4o-mini",            # tree-build model (their funcs)
+        model: str = "gemini-2.5-flash-lite",            # tree-build model (their funcs)
         retrieve_model: Optional[str] = None,  # reasoning/selection model
         repo_path: Optional[str] = None,
         api_key: Optional[str] = None,
