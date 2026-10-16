@@ -5810,15 +5810,15 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'rivals'", specifier = ">=4.38" },
     { name = "umap-learn", marker = "extra == 'all'", specifier = ">=0.5" },
     { name = "umap-learn", marker = "extra == 'rivals'", specifier = ">=0.5" },
-    { name = "vectorless-sdk", marker = "extra == 'all'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=42b1db56fdea540192ce76f1ce66c6b0ad55562e" },
-    { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=42b1db56fdea540192ce76f1ce66c6b0ad55562e" },
+    { name = "vectorless-sdk", marker = "extra == 'all'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=ac879239af1a26eaf1cd4f52f7104641317921df" },
+    { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=ac879239af1a26eaf1cd4f52f7104641317921df" },
 ]
 provides-extras = ["llm", "vector", "bm25", "vectorless", "data", "rivals", "viz", "all", "dev"]
 
 [[package]]
 name = "vectorless-sdk"
 version = "1.0.1"
-source = { git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=42b1db56fdea540192ce76f1ce66c6b0ad55562e#42b1db56fdea540192ce76f1ce66c6b0ad55562e" }
+source = { git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=ac879239af1a26eaf1cd4f52f7104641317921df#ac879239af1a26eaf1cd4f52f7104641317921df" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
