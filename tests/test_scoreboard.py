@@ -17,7 +17,7 @@ def _run(root: Path, name: str, dataset: str, created: str, rows, k: int = 5) ->
 
 
 def _rec(system, qid, hit, cost, ms, domain="comparison", native=None):
-    m = {"hit@5": hit, "recall@5": hit, "mrr": hit, "ndcg@5": hit, "gold_reachable": 1.0}
+    m = {"hit@5": hit, "recall@5": hit, "f1@5": hit, "mrr": hit, "ndcg@5": hit, "gold_reachable": 1.0}
     if native is not None:
         m["native_hits@5"] = native
     return {"qid": qid, "system": system, "repeat": 0, "domain": domain, "answer_type": "multihop",

@@ -202,8 +202,9 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 def _markdown(board: Dict[str, Dict[str, Dict[str, Any]]], rows: List[Dict[str, Any]]) -> str:
     lines = ["# Vectorless benchmark scoreboard", ""]
-    lines.append("Quality is the share of gold evidence each system retrieved in its top k units, with a 95% "
-                 "bootstrap interval. Reachable restricts it to questions whose evidence exists in the extracted "
+    lines.append("Quality is F1 at k of the units each system returned against the gold evidence (on a "
+                 "question with no answer, whether the system abstained), with a 95% bootstrap interval. "
+                 "Reachable restricts it to questions whose evidence exists in the extracted "
                  "text. Graded answer accuracy grades an answer written by the same model, from each system's "
                  "units only. Cost is the system's own spend per question; grading is reported apart. Latency "
                  "is from the isolated pass, with contended samples rerun.")
