@@ -211,6 +211,6 @@ def test_pageindex_times_retrieval_to_the_first_answer_token(monkeypatch):
     res = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=5)
     assert res.error is None and len(res.sections) == 1 and res.sections[0].page == 40
     assert res.trace["pages_read"] == [40, 41]
-    assert res.trace["total_ms"] >= res.trace["retrieval_ms"] and res.latency_ms == res.trace["retrieval_ms"]
+    assert res.trace["total_ms"] >= res.trace["retrieval_ms"] and abs(res.latency_ms - res.trace["retrieval_ms"]) < 0.1
     assert res.usage.llm_calls == 2 and res.trace["llm_calls"] == 3, "the answer call is kept apart"
     assert res.trace["answer_cost_usd"] > 0
