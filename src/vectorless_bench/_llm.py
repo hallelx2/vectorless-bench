@@ -43,7 +43,35 @@ _client_lock = threading.Lock()
 # refused call is retried with jittered backoff. Retries are counted on the
 # completion so latency the provider caused is visible in the record.
 _GATE = threading.BoundedSemaphore(int(os.environ.get("VLBENCH_LLM_CONCURRENCY", "8")))
-_MAX_RETRIES = int(os.environ.get("VLBENCH_LLM_RETRIES", "6"))
+_MAX_RETRIES = int(os.environ.get("VLBENCH_LLM_RETRIES", "10"))
+_MAX_DELAY = float(os.environ.get("VLBENCH_LLM_MAX_DELAY", "60"))
+
+# A refusal means the shared pool is busy for everyone in this process, not
+# just the caller that hit it. Every caller waits out the latest backoff
+# before its next attempt, so eight threads do not keep hammering a pool
+# that has just said no (measured 2026-10-16: MemWalker's 360-summary build
+# exhausted six independent retries).
+_COOL_LOCK = threading.Lock()
+_COOL_UNTIL = 0.0
+
+
+def _cooldown(seconds: float) -> None:
+    import time as _t
+
+    global _COOL_UNTIL
+    with _COOL_LOCK:
+        _COOL_UNTIL = max(_COOL_UNTIL, _t.monotonic() + seconds)
+
+
+def _wait_cooldown() -> None:
+    import time as _t
+
+    while True:
+        with _COOL_LOCK:
+            left = _COOL_UNTIL - _t.monotonic()
+        if left <= 0:
+            return
+        _t.sleep(min(left, 5.0))
 
 
 def project() -> str:
@@ -179,6 +207,7 @@ def generate(
     delay = 1.0
     while True:
         try:
+            _wait_cooldown()
             with _GATE:
                 r = genai_client().models.generate_content(
                     model=model, contents=contents, config=types.GenerateContentConfig(**cfg)
@@ -190,8 +219,10 @@ def generate(
             if not busy or retries >= _MAX_RETRIES:
                 raise
             retries += 1
-            _time.sleep(delay * (0.5 + random.random()))
-            delay = min(delay * 2, 30.0)
+            wait = delay * (0.5 + random.random())
+            _cooldown(wait * 0.5)  # everyone eases off; this caller waits the full jittered delay
+            _time.sleep(wait)
+            delay = min(delay * 2, _MAX_DELAY)
     calls: List[Dict[str, Any]] = []
     text_parts: List[str] = []
     finish = ""

@@ -30,7 +30,7 @@ class RunConfig:
     model: str = "gemini-3.5-flash-lite"  # the answer model, shared by every system (HAL-3048)
     embedding_model: str = "gemini-embedding-2"
     judge: bool = False
-    judge_model: str = "gemini-3.5-flash-lite"  # HAL-3047 moves grading to Jev
+    judge_model: str = "jev-latest"  # graded on Jev, a closed-set verdict (HAL-3047)  # HAL-3047 moves grading to Jev
     gen_model: str = "gemini-3.5-flash-lite"  # answer generator for the judge axis
 
     # How the run is timed (HAL-3032). "latency": one question at a time, every

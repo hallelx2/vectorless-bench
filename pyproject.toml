@@ -28,7 +28,7 @@ vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.g
 # public datasets (FinanceBench) + PDF extraction for the downloader
 data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31", "pyarrow>=15"]
 # rival systems that run their own published code
-rivals = ["pageindex>=0.4", "litellm>=1.60"]
+rivals = ["pageindex>=0.4", "litellm>=1.60", "faiss-cpu>=1.8", "umap-learn>=0.5", "tenacity>=8", "tiktoken>=0.7", "openai>=1.40", "transformers>=4.38"]
 # plots in the report
 viz = ["matplotlib>=3.8"]
 # everything
@@ -36,7 +36,7 @@ all = [
   "google-genai>=1.30", "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
   "vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@c7a1f42#subdirectory=python", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31", "pyarrow>=15",
-  "matplotlib>=3.8", "pageindex>=0.4", "litellm>=1.60",
+  "matplotlib>=3.8", "pageindex>=0.4", "litellm>=1.60", "faiss-cpu>=1.8", "umap-learn>=0.5", "tenacity>=8", "tiktoken>=0.7", "openai>=1.40", "transformers>=4.38",
 ]
 dev = ["pytest>=8.0"]
 

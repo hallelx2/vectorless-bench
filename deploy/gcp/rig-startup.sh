@@ -74,13 +74,14 @@ else
   # 0600 before the first secret lands, whoever created the file: rig.sh may
   # have appended the engine address already, under a default umask.
   touch /etc/vlbench.env && chmod 600 /etc/vlbench.env
-  grep -q '^VECTORLESS_API_KEY=' /etc/vlbench.env && sed -i '/^\(GOOGLE_CLOUD_PROJECT\|GOOGLE_CLOUD_LOCATION\|VLBENCH_THINKING_BUDGET\|VLBENCH_PG_DSN\|VECTORLESS_API_KEY\)=/d' /etc/vlbench.env
+  grep -q '^VECTORLESS_API_KEY=' /etc/vlbench.env && sed -i '/^\(GOOGLE_CLOUD_PROJECT\|GOOGLE_CLOUD_LOCATION\|VLBENCH_THINKING_BUDGET\|VLBENCH_PG_DSN\|VECTORLESS_API_KEY\|TYPESAFE_API_KEY\)=/d' /etc/vlbench.env
   cat >> /etc/vlbench.env <<EOF
 GOOGLE_CLOUD_PROJECT=$PROJECT
 GOOGLE_CLOUD_LOCATION=global
 VLBENCH_THINKING_BUDGET=$THINKING_BUDGET
 VLBENCH_PG_DSN=postgresql://vlbench:vlbench@127.0.0.1:5433/vlbench
 VECTORLESS_API_KEY=$(secret vlbench-engine-api-key)
+TYPESAFE_API_KEY=$(secret vlbench-typesafe-api-key)
 EOF
   mkdir -p /results
 fi

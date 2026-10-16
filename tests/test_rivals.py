@@ -24,3 +24,103 @@ def test_full_context_is_not_applicable_on_corpus_questions():
     r.setup([])
     out = r.retrieve(Question(qid="q", doc_id=CORPUS, question="?"), k=5)
     assert out.error.startswith("n/a:")
+
+
+class _Out:
+    def __init__(self, text):
+        from vectorless_bench.schema import Usage
+        self.text, self.usage = text, Usage(input_tokens=10, output_tokens=2, total_tokens=12, cost_usd=1e-6, llm_calls=1)
+
+
+def test_memwalker_walks_to_the_answer(monkeypatch):
+    import json as _j
+    from vectorless_bench.retrievers import memwalker as mw
+
+    def fake(model, system, user, **kw):
+        if system == mw._SUM:
+            return _Out("capex section" if ("capital expenditure" in user or "capex" in user) else "other material")
+        if system == mw._NAV:
+            lines = [l for l in user.splitlines() if l[:1].isdigit()]
+            pick = next((int(l.split(".")[0]) for l in lines if "capex" in l), 1)
+            return _Out(_j.dumps({"action": "open", "child": pick}))
+        return _Out(_j.dumps({"action": "accept" if "capital expenditure" in user else "back"}))
+
+    monkeypatch.setattr(mw, "complete", fake)
+    body = ("filler words " * 400 + "\n") * 8 + "capital expenditure was 1,577 million.\n" + ("tail words " * 400 + "\n") * 8
+    r = mw.MemWalkerRetriever(segment_tokens=300, fanout=3)
+    r.setup([Doc(doc_id="d", title="d", content=body)])
+    out = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=3)
+    assert out.trace["accepted"] and "1,577" in out.sections[0].content
+    assert r.setup_usage.llm_calls > 0, "the tree build is costed as setup"
+
+
+def test_readagent_rereads_the_chosen_page(monkeypatch):
+    import json as _j
+    from vectorless_bench.retrievers import readagent as ra
+
+    def fake(model, system, user, **kw):
+        if system == ra._PAGINATE:
+            marks = [int(t.strip("<>")) for t in user.split() if t.startswith("<") and t.endswith(">") and t.strip("<>").isdigit()]
+            return _Out(_j.dumps({"break": marks[0]}))
+        if system == ra._GIST:
+            return _Out("about capex" if "capital expenditure" in user else "about other things")
+        gists = [l for l in user.splitlines() if l.startswith("<Page")]
+        pages = [int(l.split()[1].rstrip(">")) for l in gists if "capex" in l]
+        return _Out(_j.dumps({"pages": pages}))
+
+    monkeypatch.setattr(ra, "complete", fake)
+    paras = ["word " * 150 for _ in range(12)]
+    paras[7] = "capital expenditure was 1,577 million. " + "word " * 140
+    r = ra.ReadAgentRetriever(min_words=280, max_words=600)
+    r.setup([Doc(doc_id="d", title="d", content="\n\n".join(paras))])
+    out = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=5)
+    assert out.sections and "1,577" in out.sections[0].content
+    assert len(r._pages["d"]) > 1
+
+
+def test_jev_grader_uses_a_closed_choice(monkeypatch):
+    import io, json as _j
+    from vectorless_bench import jev as jevmod
+    from vectorless_bench import judge as jmod
+
+    seen = {}
+
+    class _Resp(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    def fake_urlopen(req, timeout=0):
+        seen["body"] = _j.loads(req.data)
+        return _Resp(_j.dumps({"model": "jev-1.13.0", "answers": {"verdict": {"type": "choice", "choice": "correct",
+                     "probabilities": {"correct": 0.9}, "confidence": 0.9}}, "usage": {"input_tokens": 200, "output_tokens": 0}}).encode())
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(jevmod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(jmod, "complete", lambda *a, **k: _Out("$1,577 million"))
+    from vectorless_bench.schema import RetrievedSection
+    j = jmod.Judge("gemini-3.5-flash-lite", "jev-latest")
+    res = j.evaluate(Question(qid="q", doc_id="d", question="capex?", answer="$1577.00"), [RetrievedSection(content="x")])
+    q = seen["body"]["questions"]["verdict"]
+    assert q["type"] == "choice" and set(q["criteria"]) == {"correct", "partially_correct", "incorrect", "abstained"}
+    assert res.correct == 1.0 and res.verdict == "correct" and res.usage.cost_usd > 0
+
+
+def test_vector_memory_backend_scopes_and_spans_corpus(monkeypatch):
+    from vectorless_bench.retrievers.vector_rag import VectorRagRetriever
+    from vectorless_bench.datasets.base import CORPUS
+
+    vocab = ["capex", "revenue", "churn"]
+
+    def fake_embed(self, texts):
+        return [[float(w in t.lower()) for w in vocab] for t in texts]
+
+    monkeypatch.setattr(VectorRagRetriever, "_embed", fake_embed)
+    monkeypatch.chdir(__import__("tempfile").mkdtemp())
+    r = VectorRagRetriever(embedding_model="BAAI/bge-small-en-v1.5", backend="memory", chunk_tokens=20, overlap_tokens=0)
+    r.setup([Doc(doc_id="a", title="a", content="capex was high"), Doc(doc_id="b", title="b", content="revenue grew; capex fell")])
+    assert r.dim == 3
+    scoped = r.retrieve(Question(qid="q", doc_id="b", question="capex"), k=2)
+    assert scoped.sections and all("revenue" in s.content for s in scoped.sections)  # only document b
+    every = r.retrieve(Question(qid="q2", doc_id=CORPUS, question="capex"), k=5)
+    assert len(every.sections) == 2
+    assert r._query_text("x").startswith("Represent this sentence")

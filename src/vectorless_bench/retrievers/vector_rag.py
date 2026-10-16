@@ -18,10 +18,10 @@ one-time index cost is reported separately via setup_usage.
 
 from __future__ import annotations
 
-import math
 import os
 from typing import List, Optional, Sequence
 
+from ..datasets.base import CORPUS
 from ..pricing import compute_embedding, count_tokens
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 from ._chunk import Chunk, chunk_doc
@@ -55,7 +55,12 @@ class VectorRagRetriever:
         self._chunks: List[Chunk] = []
         self._vectors: List[List[float]] = []  # memory backend
         self._conn = None
-        self._table = "vlbench_chunks"
+        # one table per embedding model, so two vector systems in one run
+        # never read each other's rows
+        import re as _re
+
+        self._table = "vlbench_chunks_" + _re.sub(r"[^a-z0-9]+", "_", self.embedding_model.lower()).strip("_")[:40]
+        self._matrix = None  # memory backend: normalised numpy matrix
 
     # -- embeddings --------------------------------------------------------
 
@@ -100,7 +105,12 @@ class VectorRagRetriever:
 
         if getattr(self, "_local", None) is None:
             self._local = SentenceTransformer(self.embedding_model)
-        vecs = self._local.encode(list(texts), batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+        threads = int(os.environ.get("VLBENCH_TORCH_THREADS", "0"))
+        if threads:
+            import torch  # type: ignore
+
+            torch.set_num_threads(threads)
+        vecs = self._local.encode(list(texts), batch_size=32, normalize_embeddings=True, show_progress_bar=False)
         return [list(map(float, v)) for v in vecs]
 
     def _embed_gemini(self, texts: Sequence[str]) -> List[List[float]]:
@@ -152,10 +162,17 @@ class VectorRagRetriever:
         # first, uncached pass is the one whose setup_seconds is reported.
         vectors = self._cached_embed([c.text for c in self._chunks])
 
+        if vectors:
+            self.dim = len(vectors[0])  # the model decides: bge-small 384, gemini 768, bge-m3 1024
         if self.backend == "pgvector":
             self._pg_setup(vectors)
         else:
-            self._vectors = vectors
+            import numpy as np
+
+            m = np.asarray(vectors, dtype=np.float32)
+            norms = np.linalg.norm(m, axis=1, keepdims=True)
+            self._matrix = m / np.where(norms == 0, 1, norms)
+            self._doc_ids = np.asarray([c.doc_id for c in self._chunks])
         self.setup_seconds = time.perf_counter() - t0
 
     def teardown(self) -> None:
@@ -186,12 +203,16 @@ class VectorRagRetriever:
                 f"CREATE TABLE {self._table} (id serial primary key, "
                 f"doc_id text, chunk_id text, text text, embedding vector({self.dim}))"
             )
-            for ch, vec in zip(self._chunks, vectors):
-                cur.execute(
-                    f"INSERT INTO {self._table} (doc_id, chunk_id, text, embedding) "
-                    f"VALUES (%s, %s, %s, %s)",
-                    (ch.doc_id, ch.chunk_id, ch.text, vec),
-                )
+            import numpy as np
+
+            with cur.copy(f"COPY {self._table} (doc_id, chunk_id, text, embedding) FROM STDIN WITH (FORMAT BINARY)") as cp:
+                cp.set_types(["text", "text", "text", "vector"])
+                for ch, vec in zip(self._chunks, vectors):
+                    cp.write_row((ch.doc_id, ch.chunk_id, ch.text, np.asarray(vec, dtype=np.float32)))
+            # exact search: a per-document filter leaves a few hundred rows,
+            # and an approximate index would cost the baseline recall it
+            # would not have in a tuned deployment of this size
+            cur.execute(f"CREATE INDEX ON {self._table} (doc_id)")
         self._conn.commit()
 
     # -- query -------------------------------------------------------------
@@ -237,15 +258,26 @@ class VectorRagRetriever:
         # model never reaches for an OpenAI client at query time. The
         # query's tokens are priced by the caller, not folded into ingest.
         before = self.setup_usage.embedding_tokens, self.setup_usage.cost_usd
-        vec = self._embed([q])[0]
+        vec = self._embed([self._query_text(q)])[0]
         self.setup_usage.embedding_tokens, self.setup_usage.cost_usd = before
         return vec
+
+    # BGE v1.5 English models are trained with this instruction on the query
+    # side only (BAAI's model card); without it their retrieval drops.
+    _BGE_QUERY = "Represent this sentence for searching relevant passages: "
+
+    def _query_text(self, q: str) -> str:
+        m = self.embedding_model.lower()
+        if m.startswith("baai/bge-") and m.endswith("-v1.5") and "-en" in m:
+            return self._BGE_QUERY + q
+        return q
 
     def _pg_query(self, qvec, doc_id, k):
         # the cosine operator (<=>) appears in both SELECT and ORDER BY, so the
         # query vector is bound twice; doc filter is bound between them.
-        where = "WHERE doc_id = %s" if self.per_doc else ""
-        params = [qvec] + ([doc_id] if self.per_doc else []) + [qvec, k]
+        scoped = self.per_doc and doc_id != CORPUS  # a corpus-level question searches every chunk
+        where = "WHERE doc_id = %s" if scoped else ""
+        params = [qvec] + ([doc_id] if scoped else []) + [qvec, k]
         sql = (
             f"SELECT chunk_id, text, 1 - (embedding <=> %s) AS score "
             f"FROM {self._table} {where} ORDER BY embedding <=> %s LIMIT %s"
@@ -255,18 +287,15 @@ class VectorRagRetriever:
             return [(r[0], r[1], float(r[2])) for r in cur.fetchall()]
 
     def _mem_query(self, qvec, doc_id, k):
-        def cos(a, b):
-            dot = sum(x * y for x, y in zip(a, b))
-            na = math.sqrt(sum(x * x for x in a))
-            nb = math.sqrt(sum(y * y for y in b))
-            return dot / (na * nb) if na and nb else 0.0
+        import numpy as np
 
-        idxs = range(len(self._chunks))
-        if self.per_doc:
-            idxs = [i for i in idxs if self._chunks[i].doc_id == doc_id]
-        scored = [(i, cos(qvec, self._vectors[i])) for i in idxs]
-        scored.sort(key=lambda t: t[1], reverse=True)
-        return [
-            (self._chunks[i].chunk_id, self._chunks[i].text, s)
-            for i, s in scored[:k]
-        ]
+        if self._matrix is None or not len(self._matrix):
+            return []
+        q = np.asarray(qvec, dtype=np.float32)
+        q = q / (np.linalg.norm(q) or 1.0)
+        idx = np.arange(len(self._chunks))
+        if self.per_doc and doc_id != CORPUS:
+            idx = idx[self._doc_ids == doc_id]
+        scores = self._matrix[idx] @ q
+        top = idx[np.argsort(-scores)[:k]]
+        return [(self._chunks[i].chunk_id, self._chunks[i].text, float(self._matrix[i] @ q)) for i in top]
