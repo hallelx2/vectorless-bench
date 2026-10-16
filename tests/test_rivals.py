@@ -166,3 +166,51 @@ def test_embedding_cache_is_per_document_and_keeps_measured_seconds(monkeypatch,
     assert len(calls) == first and r2.setup_meta["embedding_cache_hits"] == 1
     assert r2.setup_usage.cost_usd > 0, "a cache hit still prices the ingest"
     assert "embedding_seconds_measured" in r2.setup_meta
+
+
+def test_pageindex_pages_from_tool_arguments():
+    from vectorless_bench.retrievers.pageindex import _pages_from
+
+    assert _pages_from({"pages": "5-7"}) == [5, 6, 7]
+    assert _pages_from({"page": 12}) == [12]
+    assert _pages_from({"start_page": 3, "end_page": 4}) == [3, 4]
+    assert _pages_from({"page_numbers": [9, 2, 9]}) == [2, 9]
+    assert _pages_from({"node_id": "0007"}) == []
+
+
+def test_pageindex_times_retrieval_to_the_first_answer_token(monkeypatch):
+    import time as _t
+    from vectorless_bench.retrievers import pageindex as pi
+
+    events = [
+        {"type": "tool_call", "call_id": "1", "name": "get_document_structure", "arguments": {}},
+        {"type": "tool_result", "call_id": "1", "name": "get_document_structure", "output": "tree"},
+        {"type": "tool_call", "call_id": "2", "name": "get_page_content", "arguments": {"pages": "40-41"}},
+        {"type": "tool_result", "call_id": "2", "name": "get_page_content", "output": "capex was 1,577"},
+        {"type": "answer", "delta": "Capex was "},
+        {"type": "answer", "delta": "$1,577 million."},
+    ]
+
+    class _Stream:
+        @property
+        def events(self):
+            for i, e in enumerate(events):
+                if e["type"] == "tool_call":
+                    pi._SINK.add("vertex_ai/gemini-3.5-flash-lite", 100, 10, 0, 0.1)
+                if i == 5:
+                    pi._SINK.add("vertex_ai/gemini-3.5-flash-lite", 50, 20, 0, 0.1)  # the answer's own call
+                    _t.sleep(0.02)
+                yield e
+
+    class _Client:
+        def chat(self, q, doc_id, stream):
+            return _Stream()
+
+    r = pi.PageIndexRetriever.__new__(pi.PageIndexRetriever)
+    r._client, r._doc_ids = _Client(), {"d": "pi-1"}
+    res = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=5)
+    assert res.error is None and len(res.sections) == 1 and res.sections[0].page == 40
+    assert res.trace["pages_read"] == [40, 41]
+    assert res.trace["total_ms"] >= res.trace["retrieval_ms"] and res.latency_ms == res.trace["retrieval_ms"]
+    assert res.usage.llm_calls == 2 and res.trace["llm_calls"] == 3, "the answer call is kept apart"
+    assert res.trace["answer_cost_usd"] > 0

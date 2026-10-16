@@ -71,7 +71,7 @@ differentiator the whitepaper argues for, made measurable.
 |---|---|---|
 | `vectorless` | the engine under test, via the Python SDK | `vectorless-sdk` + a running server |
 | `vector_rag` | pgvector + OpenAI embeddings + cosine top-k (the ROADMAP baseline) | `[vector]` + Postgres/pgvector |
-| `pageindex` | the real upstream [PageIndex](https://github.com/VectifyAI/PageIndex) — *their* tree builder (`page_index`/`md_to_tree`) + their reasoning retrieval, priced on our table | clone of PageIndex + `[llm]` |
+| `pageindex` | the real upstream [PageIndex](https://github.com/VectifyAI/PageIndex) SDK end to end: `submit_document` builds the tree with their prompts, and `chat(stream=True)` runs their agent and its own tools. Its retrieval is what the agent read through its content tools, timed to its first answer token, with the end of the stream also recorded (`total_ms`); the pages it asked for, its LLM calls, and ingest split into model-call seconds and local work are on the record. It runs on Vertex Gemini through LiteLLM, priced on our table | `pageindex` + `litellm` (`[rivals]`) |
 | `full_context` | stuff the whole doc in the prompt — the quality **ceiling** + cost worst case | `[llm]` |
 | `bm25` | lexical floor; free, no API, strong on exact-term lookups | `[bm25]` |
 | `mock` | deterministic fake for harness CI — no services | none |

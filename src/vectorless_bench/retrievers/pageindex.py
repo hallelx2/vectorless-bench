@@ -24,6 +24,7 @@ refused 2.5 Flash-Lite outright (HAL-3048).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import tempfile
@@ -45,11 +46,15 @@ class _UsageSink:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.active: Optional[Usage] = None
+        # Seconds spent inside model calls while active: for ingest, the LLM
+        # phase, as against PageIndex's own local parse.
+        self.call_seconds = 0.0
 
-    def add(self, model: str, prompt: int, completion: int, cached: int) -> None:
+    def add(self, model: str, prompt: int, completion: int, cached: int, seconds: float = 0.0) -> None:
         with self.lock:
             if self.active is None:
                 return
+            self.call_seconds += max(0.0, seconds)
             m = model.split("/", 1)[-1]
             self.active.input_tokens += prompt
             self.active.output_tokens += completion
@@ -76,8 +81,12 @@ def _install_callback() -> None:
                 return
             details = getattr(u, "prompt_tokens_details", None)
             cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+            try:
+                seconds = (end_time - start_time).total_seconds()
+            except Exception:
+                seconds = 0.0
             _SINK.add(str(kwargs.get("model", "")), int(getattr(u, "prompt_tokens", 0) or 0),
-                      int(getattr(u, "completion_tokens", 0) or 0), cached)
+                      int(getattr(u, "completion_tokens", 0) or 0), cached, seconds)
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
             self.log_success_event(kwargs, response_obj, start_time, end_time)
@@ -85,6 +94,42 @@ def _install_callback() -> None:
     litellm.callbacks = list(getattr(litellm, "callbacks", []) or []) + [_Logger()]
     litellm.num_retries = max(int(getattr(litellm, "num_retries", 0) or 0), 6)
     _INSTALLED = True
+
+
+_PAGE_RANGE = re.compile(r"(\d+)\s*(?:-|to|–)\s*(\d+)")
+
+
+def _pages_from(args: Any) -> List[int]:
+    """The pages a content-tool call asked for, from its arguments: a page
+    number, a list of them, a "5-7" range, or start/end page fields."""
+    out: List[int] = []
+
+    def take(v: Any) -> None:
+        if isinstance(v, bool):
+            return
+        if isinstance(v, int):
+            out.append(v)
+        elif isinstance(v, str):
+            for a, b in _PAGE_RANGE.findall(v):
+                lo, hi = int(a), int(b)
+                if 0 < hi - lo < 500:
+                    out.extend(range(lo, hi + 1))
+            if not _PAGE_RANGE.search(v):
+                out.extend(int(x) for x in re.findall(r"\d+", v))
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                take(x)
+
+    if isinstance(args, dict):
+        start, end = args.get("start_page"), args.get("end_page")
+        if isinstance(start, int) and isinstance(end, int) and 0 <= end - start < 500:
+            out.extend(range(start, end + 1))
+        for key, v in args.items():
+            if "page" in key.lower() and key not in ("start_page", "end_page"):
+                take(v)
+    else:
+        take(args)
+    return sorted(dict.fromkeys(p for p in out if p > 0))
 
 
 def _output_text(out: Any) -> str:
@@ -137,6 +182,7 @@ class PageIndexRetriever:
         )
         self.setup_meta = {"pageindex_version": md.version("pageindex"), "failed": []}
         t0 = time.perf_counter()
+        _SINK.call_seconds = 0.0
         _SINK.active = self.setup_usage
         try:
             for d in corpus:
@@ -160,6 +206,12 @@ class PageIndexRetriever:
         finally:
             _SINK.active = None
         self.setup_seconds = time.perf_counter() - t0
+        # Indexing is serial per document, so the model-call seconds are the
+        # LLM phase and the rest is PageIndex's local parse and bookkeeping
+        # (summary calls overlap at summary_concurrency, so the LLM figure is
+        # call time, and can exceed its share of wall time).
+        self.setup_meta["llm_call_seconds"] = round(_SINK.call_seconds, 3)
+        self.setup_meta["local_seconds"] = round(max(0.0, self.setup_seconds - _SINK.call_seconds), 3)
 
     def _source_path(self, d: Doc) -> str:
         """PageIndex's own parser reads the original: a PDF as is, anything
@@ -182,7 +234,11 @@ class PageIndexRetriever:
         usage = Usage()
         sections: List[RetrievedSection] = []
         tools: List[str] = []
-        pending: Dict[str, str] = {}
+        args: Dict[str, Any] = {}
+        pages_read: List[int] = []
+        retrieval_ms: Optional[float] = None
+        retrieval_usage: Optional[Usage] = None
+        answer_chars = 0
         t0 = time.perf_counter()
         _SINK.active = usage
         try:
@@ -190,25 +246,45 @@ class PageIndexRetriever:
             for ev in stream.events:
                 kind = ev.get("type")
                 if kind == "tool_call":
-                    tools.append(str(ev.get("name")))
-                    pending[str(ev.get("call_id") or len(tools))] = str(ev.get("name"))
+                    name = str(ev.get("name"))
+                    tools.append(name)
+                    args[str(ev.get("call_id") or len(tools))] = ev.get("arguments")
+                    if name != "get_document_structure" and _CONTENT_TOOL.search(name):
+                        pages_read.extend(p for p in _pages_from(ev.get("arguments")) if p not in pages_read)
                 elif kind == "tool_result":
                     name = str(ev.get("name") or "")
                     if name != "get_document_structure" and _CONTENT_TOOL.search(name):
                         text = _output_text(ev.get("output"))
                         if text.strip():
-                            sections.append(RetrievedSection(content=text, section_id=f"pi:{len(sections)}",
-                                                             title=name))
+                            call_pages = _pages_from(args.get(str(ev.get("call_id")), None))
+                            sections.append(RetrievedSection(
+                                content=text, section_id=f"pi:{len(sections)}", title=name,
+                                page=call_pages[0] if call_pages else None, doc_id=question.doc_id))
                 elif kind == "answer":
-                    break  # retrieval is done once the agent starts answering
+                    if retrieval_ms is None:
+                        # Retrieval ends where the agent starts answering: the
+                        # same boundary as every system. Its answer is PageIndex's
+                        # own and is not scored, so its cost is kept apart.
+                        retrieval_ms = (time.perf_counter() - t0) * 1000.0
+                        with _SINK.lock:
+                            retrieval_usage = dataclasses.replace(usage)
+                    answer_chars += len(str(ev.get("delta") or ""))
         except Exception as e:  # pragma: no cover - network
             _SINK.active = None
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
                                    error=str(e)[:500], cold=cold, trace={"tools": tools})
         finally:
             _SINK.active = None
+        total_ms = (time.perf_counter() - t0) * 1000.0
+        if retrieval_ms is None:  # the agent never answered: all of it was retrieval
+            retrieval_ms, retrieval_usage = total_ms, usage
         return RetrievalResult(
             qid=question.qid, system=self.name, query=question.question,
-            sections=sections[:k], usage=usage, latency_ms=(time.perf_counter() - t0) * 1000.0,
-            strategy="pageindex-agent", cold=cold, trace={"tools": tools},
+            sections=sections[:k], usage=retrieval_usage, latency_ms=retrieval_ms,
+            strategy="pageindex-agent", cold=cold,
+            trace={"tools": tools, "pages_read": pages_read, "retrieval_ms": round(retrieval_ms, 1),
+                   "total_ms": round(total_ms, 1), "llm_calls": usage.llm_calls,
+                   "retrieval_llm_calls": retrieval_usage.llm_calls,
+                   "answer_cost_usd": round(usage.cost_usd - retrieval_usage.cost_usd, 8),
+                   "answer_chars": answer_chars},
         )
