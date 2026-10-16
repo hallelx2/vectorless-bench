@@ -263,3 +263,25 @@ def count_tokens(model: str, text: str) -> int:
     require_vertex_model(model)
     r = genai_client().models.count_tokens(model=model, contents=text)
     return int(r.total_tokens or 0)
+
+
+def complete_patient(*args: Any, attempts: int = 4, pause: float = 90.0, **kwargs: Any):
+    """complete() for index builds, which make hundreds of calls in a burst.
+
+    complete() already retries a refusal for about two minutes. A build that
+    hits a long spell of Vertex's shared capacity being busy can outlast
+    that, and one refused summary used to void a whole system's setup (the
+    pilot's MemWalker on FinanceBench, 2026-10-16). Here a refusal that
+    survives complete()'s own retries waits pause*attempt seconds and tries
+    again, up to `attempts` times. Only refusals for load are retried."""
+    import time as _t
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return complete(*args, **kwargs)
+        except Exception as e:
+            if not _busy(e) or attempt == attempts:
+                raise
+            _cooldown(pause * attempt * 0.5)
+            _t.sleep(pause * attempt)
+    raise RuntimeError("unreachable")

@@ -429,3 +429,51 @@ def test_a_record_keeps_the_answer_it_was_graded_on():
     rec = runner._eval_one("x", q, _Ret(), RunConfig(dataset="fixtures"), _Judge(), 0, None)
     assert rec.trace["answer"] == "it is a" and rec.trace["verdict"] == "correct"
     assert rec.trace["answered_from"] == "returned units"
+
+
+
+def test_one_unbuildable_document_does_not_void_memwalker_or_readagent(monkeypatch):
+    from vectorless_bench.retrievers import memwalker as mw
+    from vectorless_bench.retrievers import readagent as ra
+
+    def flaky(model, system, user, **kw):
+        if "POISON" in user:
+            raise RuntimeError("400 bad request")
+        return _Out('{"break": 1}' if system == ra._PAGINATE else "summary")
+
+    monkeypatch.setattr(mw, "complete_patient", flaky)
+    monkeypatch.setattr(ra, "complete_patient", flaky)
+    docs = [Doc(doc_id="good", title="g", content="fine words " * 300), Doc(doc_id="bad", title="b", content="POISON " * 300)]
+    for r in (mw.MemWalkerRetriever(segment_tokens=200), ra.ReadAgentRetriever(min_words=50, max_words=200)):
+        r.setup(docs)
+        assert [f["doc"] for f in r.setup_meta["failed"]] == ["bad"], type(r).__name__
+        bad = r.retrieve(Question(qid="q", doc_id="bad", question="?"), k=3)
+        assert bad.error, "a question on an unbuilt document errors on its own"
+
+
+def test_patient_completion_waits_out_a_long_refusal(monkeypatch):
+    from vectorless_bench import _llm
+
+    calls = {"n": 0}
+
+    class Busy(Exception):
+        code = 429
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise Busy("RESOURCE_EXHAUSTED")
+        return "ok"
+
+    monkeypatch.setattr(_llm, "complete", flaky)
+    monkeypatch.setattr(_llm, "_cooldown", lambda s: None)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert _llm.complete_patient("m", "s", "u", pause=1) == "ok" and calls["n"] == 3
+
+    def bad(*a, **k):
+        raise ValueError("400 invalid")
+
+    monkeypatch.setattr(_llm, "complete", bad)
+    import pytest
+    with pytest.raises(ValueError):
+        _llm.complete_patient("m", "s", "u", pause=1)

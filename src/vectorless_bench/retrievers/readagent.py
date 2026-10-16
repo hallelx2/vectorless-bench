@@ -26,7 +26,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 
-from .._llm import DEFAULT_MODEL, complete, require_vertex_model
+from .._llm import DEFAULT_MODEL, complete, complete_patient, require_vertex_model
 from ..datasets.base import CORPUS
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
@@ -97,7 +97,7 @@ class ReadAgentRetriever:
                     marked.append(p)
                     if (n + 1) in cands:
                         marked.append(f"<{n + 1}>")
-                out = complete(self.model, _PAGINATE, "\n\n".join(marked), max_tokens=20, json_mode=True)
+                out = complete_patient(self.model, _PAGINATE, "\n\n".join(marked), max_tokens=20, json_mode=True)
                 self.setup_usage.add(out.usage)
                 try:
                     cut = int(json.loads(out.text).get("break"))
@@ -112,7 +112,7 @@ class ReadAgentRetriever:
 
     def _gist(self, pages: List[str]) -> List[str]:
         def one(p: str) -> str:
-            out = complete(self.model, _GIST, p, max_tokens=120)
+            out = complete_patient(self.model, _GIST, p, max_tokens=120)
             with self._lock:
                 self.setup_usage.add(out.usage)
             return out.text.strip()
@@ -122,10 +122,18 @@ class ReadAgentRetriever:
 
     def setup(self, corpus: List[Doc]) -> None:
         t0 = time.perf_counter()
+        self.setup_meta["failed"] = []
         for d in corpus:
-            pages = self._paginate(d.content)
+            # One document that cannot be read is recorded, and its questions
+            # error on their own; it does not void the rest.
+            try:
+                pages = self._paginate(d.content)
+                gists = self._gist(pages)
+            except Exception as e:  # pragma: no cover - network
+                self.setup_meta["failed"].append({"doc": d.doc_id, "error": str(e)[:300]})
+                continue
             self._pages[d.doc_id] = pages
-            self._gists[d.doc_id] = self._gist(pages)
+            self._gists[d.doc_id] = gists
         self.setup_seconds = time.perf_counter() - t0
 
     def teardown(self) -> None:

@@ -29,7 +29,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from .._llm import DEFAULT_MODEL, complete, require_vertex_model
+from .._llm import DEFAULT_MODEL, complete, complete_patient, require_vertex_model
 from ..datasets.base import CORPUS
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 from ._chunk import chunk_doc
@@ -77,7 +77,7 @@ class MemWalkerRetriever:
 
     def _summarise(self, texts: List[str]) -> List[str]:
         def one(t: str) -> str:
-            out = complete(self.model, _SUM, t, max_tokens=220)
+            out = complete_patient(self.model, _SUM, t, max_tokens=220)
             with self._lock:
                 self.setup_usage.add(out.usage)
             return out.text.strip()
@@ -97,8 +97,14 @@ class MemWalkerRetriever:
 
     def setup(self, corpus: List[Doc]) -> None:
         t0 = time.perf_counter()
+        self.setup_meta["failed"] = []
         for d in corpus:
-            self._roots[d.doc_id] = self._build(d)
+            # One document that cannot be built is recorded, and its
+            # questions error on their own; it does not void the rest.
+            try:
+                self._roots[d.doc_id] = self._build(d)
+            except Exception as e:  # pragma: no cover - network
+                self.setup_meta["failed"].append({"doc": d.doc_id, "error": str(e)[:300]})
         self.setup_seconds = time.perf_counter() - t0
 
     def teardown(self) -> None:
