@@ -77,3 +77,25 @@ def test_path_correct_is_structural_only():
 def test_primary_quality_picks_abstention_for_no_answer():
     assert primary_quality({"abstained": 1.0}, k=5) == 1.0
     assert primary_quality({"f1@5": 0.7}, k=5) == 0.7
+
+
+def test_answer_shares_and_reachable_subset(tmp_path):
+    import json as _j
+    from vectorless_bench.report import summarize
+
+    def rec(qid, verdict, reach, hit):
+        m = {"hit@5": hit, "recall@5": hit, "mrr": hit, "ndcg@5": hit, "gold_reachable": reach,
+             "answer_correct": 1.0 if verdict == "correct" else 0.0}
+        for v in ("correct", "partially_correct", "incorrect", "abstained"):
+            m[f"verdict_{v}"] = 1.0 if v == verdict else 0.0
+        return {"qid": qid, "system": "s", "repeat": 0, "metrics": m, "usage": {}, "latency_ms": 1.0, "wall_ms": 1.0, "domain": "x", "answer_type": "lookup", "difficulty": None, "phase": "latency", "flagged": False}
+
+    rows = [rec("a", "correct", 1.0, 1.0), rec("b", "abstained", 1.0, 0.0), rec("c", "incorrect", 0.0, 0.0)]
+    (tmp_path / "records.jsonl").write_text("\n".join(_j.dumps(r) for r in rows))
+    res = summarize(tmp_path, 5)
+    s = res["results"]["s"] if "results" in res else res["s"]
+    a = s["answer"]
+    assert abs(a["correct"] + a["partially_correct"] + a["incorrect"] + a["abstained"] - 1.0) < 1e-9
+    assert abs(a["correct"] - 1 / 3) < 1e-9
+    r = s["reachable"]
+    assert r["n"] == 2 and abs(r["share_of_scored"] - 2 / 3) < 1e-4 and r["hit@5"] == 0.5

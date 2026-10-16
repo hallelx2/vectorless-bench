@@ -30,10 +30,48 @@ from typing import Any, Dict, List, Optional
 from .pricing import compute
 from .schema import Usage
 
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"  # HAL-3048: 2.5 Flash-Lite is refused by Vertex shared capacity at benchmark pace
 
 _client = None
 _client_lock = threading.Lock()
+
+# Gemini 2.x/3.x text models on Vertex run on Dynamic Shared Quota: no
+# per-project limit to raise, and 429 RESOURCE_EXHAUSTED when the shared pool
+# is busy (measured 2026-10-16: 2.5 Flash-Lite refused 46 of 48 calls at 16
+# in flight; 3.5 Flash-Lite took 16 cleanly, 32 with 8 of 96 refused). One
+# gate bounds calls in flight across every system in the process, and a
+# refused call is retried with jittered backoff. Retries are counted on the
+# completion so latency the provider caused is visible in the record.
+_GATE = threading.BoundedSemaphore(int(os.environ.get("VLBENCH_LLM_CONCURRENCY", "8")))
+_MAX_RETRIES = int(os.environ.get("VLBENCH_LLM_RETRIES", "10"))
+_MAX_DELAY = float(os.environ.get("VLBENCH_LLM_MAX_DELAY", "60"))
+
+# A refusal means the shared pool is busy for everyone in this process, not
+# just the caller that hit it. Every caller waits out the latest backoff
+# before its next attempt, so eight threads do not keep hammering a pool
+# that has just said no (measured 2026-10-16: MemWalker's 360-summary build
+# exhausted six independent retries).
+_COOL_LOCK = threading.Lock()
+_COOL_UNTIL = 0.0
+
+
+def _cooldown(seconds: float) -> None:
+    import time as _t
+
+    global _COOL_UNTIL
+    with _COOL_LOCK:
+        _COOL_UNTIL = max(_COOL_UNTIL, _t.monotonic() + seconds)
+
+
+def _wait_cooldown() -> None:
+    import time as _t
+
+    while True:
+        with _COOL_LOCK:
+            left = _COOL_UNTIL - _t.monotonic()
+        if left <= 0:
+            return
+        _t.sleep(min(left, 5.0))
 
 
 def project() -> str:
@@ -83,6 +121,10 @@ class Completion:
     usage: Usage
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     finish_reason: str = ""
+    # The model's turn exactly as returned; a tool loop appends it to the
+    # conversation unchanged (it carries Gemini 3's thought signatures).
+    raw_content: Any = None
+    retries: int = 0
 
 
 def usage_from(model: str, um: Any) -> Usage:
@@ -158,15 +200,37 @@ def generate(
     if cached_content:
         cfg["cached_content"] = cached_content
 
-    r = genai_client().models.generate_content(
-        model=model, contents=contents, config=types.GenerateContentConfig(**cfg)
-    )
+    import random
+    import time as _time
+
+    retries = 0
+    delay = 1.0
+    while True:
+        try:
+            _wait_cooldown()
+            with _GATE:
+                r = genai_client().models.generate_content(
+                    model=model, contents=contents, config=types.GenerateContentConfig(**cfg)
+                )
+            break
+        except Exception as e:
+            msg = str(e)
+            busy = "429" in msg or "RESOURCE_EXHAUSTED" in msg or "503" in msg or "UNAVAILABLE" in msg
+            if not busy or retries >= _MAX_RETRIES:
+                raise
+            retries += 1
+            wait = delay * (0.5 + random.random())
+            _cooldown(wait * 0.5)  # everyone eases off; this caller waits the full jittered delay
+            _time.sleep(wait)
+            delay = min(delay * 2, _MAX_DELAY)
     calls: List[Dict[str, Any]] = []
     text_parts: List[str] = []
     finish = ""
+    raw = None
     if r.candidates:
         cand = r.candidates[0]
         finish = str(getattr(cand, "finish_reason", "") or "")
+        raw = cand.content
         for p in (cand.content.parts if cand.content and cand.content.parts else []):
             if getattr(p, "function_call", None) is not None:
                 calls.append({"name": p.function_call.name, "args": dict(p.function_call.args or {}), "part": p})
@@ -177,6 +241,8 @@ def generate(
         usage=usage_from(model, getattr(r, "usage_metadata", None)),
         tool_calls=calls,
         finish_reason=finish,
+        raw_content=raw,
+        retries=retries,
     )
 
 

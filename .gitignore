@@ -20,3 +20,8 @@ dist/
 # env
 .env
 data/cache/
+
+# every fetched dataset (vlbench datasets fetch rebuilds them); fixtures stay tracked
+data/*
+!data/fixtures/
+data/cache/

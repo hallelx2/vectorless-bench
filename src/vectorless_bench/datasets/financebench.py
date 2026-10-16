@@ -66,6 +66,15 @@ class FinanceBenchDataset(Dataset):
         self._rows: Optional[List[Dict[str, Any]]] = None
         self._needed_docs: set[str] = set()
 
+    def fetch(self) -> None:
+        """Download the filings (scripts/download_financebench.py)."""
+        import subprocess
+        import sys as _sys
+
+        script = Path(__file__).resolve().parents[3] / "scripts" / "download_financebench.py"
+        subprocess.run([_sys.executable, str(script), "--docs-dir", str(self.docs_dir),
+                        "--hf-name", self.hf_name, "--split", self.split], check=True)
+
     def _load_rows(self) -> List[Dict[str, Any]]:
         if self._rows is not None:
             return self._rows
@@ -125,7 +134,11 @@ class FinanceBenchDataset(Dataset):
                 GoldAnchor(
                     doc_id=doc_name,
                     answer_spans=spans,
-                    page=int(page) if isinstance(page, (int, float)) else None,
+                    # FinanceBench numbers pages from 0 (measured 2026-10-16:
+                    # read as 1-based, 9.5% of gold pages hold their evidence
+                    # and 82.5% sit one page off); the engine and every PDF
+                    # reader number from 1.
+                    page=int(page) + 1 if isinstance(page, (int, float)) else None,
                 )
             )
         if not anchors:  # fall back to the answer string alone
@@ -165,8 +178,3 @@ class FinanceBenchDataset(Dataset):
             )
         return docs
 
-    def questions_for_available_corpus(self) -> List[Question]:
-        """Questions whose source document text is actually present — what the
-        runner should evaluate so missing docs don't count as failures."""
-        have = {d.doc_id for d in self.corpus()}
-        return [q for q in self.questions() if q.doc_id in have]

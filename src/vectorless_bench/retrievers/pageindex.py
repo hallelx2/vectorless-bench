@@ -1,221 +1,214 @@
-"""PageIndex baseline — wired to the REAL upstream code (VectifyAI/PageIndex).
+"""PageIndex — VectifyAI's open-source SDK, running its OWN indexer and its
+OWN chat agent (HAL-2477), on Gemini through Vertex via LiteLLM.
 
-PageIndex is the closest structural-retrieval competitor and the reference
-implementation Vectorless is positioned against, so we run *their* code rather
-than a reimplementation:
+What runs is theirs, end to end: `PageIndexClient.submit_document` builds the
+tree with their prompts, and `chat(..., stream=True)` runs their agent, which
+calls their tools (`get_document_structure`, then `get_page_content` and the
+like) until it is ready to answer. Earlier versions of this adapter drove our
+own selector over their tree, which measured our prompt, not PageIndex.
 
-- Tree building uses their actual functions: `page_index(pdf_path, ...)` for PDFs
-  and `md_to_tree(md_path, ...)` for markdown (returns {doc_name, structure:[...]}).
-- Retrieval follows PageIndex's own reasoning pattern (their agentic demo + the
-  `get_document_structure` / `get_page_content` tools): show the LLM the tree
-  outline with text stripped, let it select the relevant node(s), then return
-  those nodes' text. We drive that selection with the shared, priced LLM client
-  so PageIndex's query cost is measured on the exact same basis as Vectorless.
+Measurement boundary, the same as every system's: retrieval ends when the
+agent stops calling tools and starts answering (its first answer token), so
+the comparison times finding the evidence, not writing prose. What the agent
+read through its content tools, in reading order, is its retrieval.
 
-PageIndex is not on PyPI — it's clone + `pip install -r requirements.txt`. Point
-this adapter at the checkout via `repo_path=` or `VLBENCH_PAGEINDEX_PATH`; the
-Docker bundle clones it to /opt/PageIndex and sets that automatically.
+Usage: every LiteLLM call PageIndex makes, indexing and chat, is captured by
+a callback and priced from the shared price book, so PageIndex's ingest cost
+(missing before) and query cost are both on the bill.
 
-Modes:
-- "oss"  (default): self-hosted. Their tree builder + reasoning over the tree.
-- "cloud": their hosted PageIndexClient (`index` + `get_document_structure` +
-  `get_page_content`) with the same reasoning loop.
-
-Note: PageIndex's tree builders call an LLM internally and don't return token
-usage, so PageIndex's *ingest* cost isn't captured (recorded as 0 with a flag);
-query cost is fully measured.
+Model: the run's shared model as a LiteLLM Vertex route
+("vertex_ai/<model>"), Application Default Credentials, global location.
+Indexing concurrency is held at 4: at higher fan-out Vertex's shared pool
+refused 2.5 Flash-Lite outright (HAL-3048).
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import sys
+import re
 import tempfile
+import threading
 import time
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from .._llm import complete
+from .._llm import DEFAULT_MODEL, project, require_vertex_model
+from ..pricing import compute
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
-_NAV_SYSTEM = (
-    "You are PageIndex's reasoning retriever. You are given a document's tree "
-    "outline (node ids, heading paths, summaries — no body text) and a question. "
-    "Decide which node(s) to open to answer it, the way an expert skims a table "
-    "of contents then jumps to the right section. Prefer the most specific nodes; "
-    "return as few as possible. Respond as JSON: {\"node_ids\": [\"...\"]}."
-)
+_CONTENT_TOOL = re.compile(r"content|page|read|node|section", re.I)
+
+
+class _UsageSink:
+    """Collects LiteLLM usage from whichever thread made the call."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.active: Optional[Usage] = None
+
+    def add(self, model: str, prompt: int, completion: int, cached: int) -> None:
+        with self.lock:
+            if self.active is None:
+                return
+            m = model.split("/", 1)[-1]
+            self.active.input_tokens += prompt
+            self.active.output_tokens += completion
+            self.active.total_tokens += prompt + completion
+            self.active.cost_usd += compute(m, max(0, prompt - cached), completion, cached_tokens=cached)
+            self.active.llm_calls += 1
+
+
+_SINK = _UsageSink()
+_INSTALLED = False
+
+
+def _install_callback() -> None:
+    global _INSTALLED
+    if _INSTALLED:
+        return
+    import litellm  # type: ignore
+    from litellm.integrations.custom_logger import CustomLogger  # type: ignore
+
+    class _Logger(CustomLogger):
+        def log_success_event(self, kwargs, response_obj, start_time, end_time):
+            u = getattr(response_obj, "usage", None)
+            if u is None:
+                return
+            details = getattr(u, "prompt_tokens_details", None)
+            cached = int(getattr(details, "cached_tokens", 0) or 0) if details else 0
+            _SINK.add(str(kwargs.get("model", "")), int(getattr(u, "prompt_tokens", 0) or 0),
+                      int(getattr(u, "completion_tokens", 0) or 0), cached)
+
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            self.log_success_event(kwargs, response_obj, start_time, end_time)
+
+    litellm.callbacks = list(getattr(litellm, "callbacks", []) or []) + [_Logger()]
+    litellm.num_retries = max(int(getattr(litellm, "num_retries", 0) or 0), 6)
+    _INSTALLED = True
+
+
+def _output_text(out: Any) -> str:
+    if out is None:
+        return ""
+    if isinstance(out, str):
+        return out
+    if isinstance(out, (list, tuple)):
+        return "\n".join(_output_text(x) for x in out)
+    if isinstance(out, dict):
+        for k in ("text", "content", "output"):
+            if k in out:
+                return _output_text(out[k])
+        return str(out)
+    return str(out)
 
 
 class PageIndexRetriever:
     name = "pageindex"
 
-    def __init__(
-        self,
-        mode: str = "oss",
-        model: str = "gemini-2.5-flash-lite",            # tree-build model (their funcs)
-        retrieve_model: Optional[str] = None,  # reasoning/selection model
-        repo_path: Optional[str] = None,
-        api_key: Optional[str] = None,
-        node_summaries: str = "yes",
-        **_: object,
-    ) -> None:
-        self.mode = mode
+    def __init__(self, model: str = DEFAULT_MODEL, retrieve_model: Optional[str] = None,
+                 storage_path: Optional[str] = None, summary_concurrency: int = 2,
+                 **_: object) -> None:
+        require_vertex_model(model)
         self.model = model
         self.retrieve_model = retrieve_model or model
-        self.repo_path = repo_path or os.environ.get("VLBENCH_PAGEINDEX_PATH")
-        self.api_key = api_key or os.environ.get("PAGEINDEX_API_KEY")
-        self.node_summaries = node_summaries
+        require_vertex_model(self.retrieve_model)
+        self.storage = storage_path or tempfile.mkdtemp(prefix="vlbench-pageindex-")
+        self.summary_concurrency = summary_concurrency
         self.setup_seconds = 0.0
-        self.setup_usage = Usage(llm_calls=0)  # upstream doesn't surface usage
+        self.setup_usage = Usage()
         self._client = None
-        self._trees: Dict[str, dict] = {}
-        self._nodes: Dict[str, Dict[str, dict]] = {}  # logical -> {node_id: node}
-        self._cloud_docs: Dict[str, str] = {}
+        self._doc_ids: Dict[str, str] = {}
+        self.setup_meta: Dict[str, Any] = {}
 
-    # -- lifecycle ---------------------------------------------------------
+    def _route(self, m: str) -> str:
+        return f"vertex_ai/{m}"
+
     def setup(self, corpus: List[Doc]) -> None:
-        self._ensure_importable()
-        t0 = time.perf_counter()
-        if self.mode == "cloud":
-            from pageindex import PageIndexClient  # type: ignore
+        os.environ.setdefault("VERTEXAI_PROJECT", project())
+        os.environ.setdefault("VERTEXAI_LOCATION", os.environ.get("GOOGLE_CLOUD_LOCATION", "global"))
+        _install_callback()
+        from pageindex import PageIndexClient  # type: ignore
+        import importlib.metadata as md
 
-            self._client = PageIndexClient(
-                api_key=self.api_key, model=self.model,
-                retrieve_model=self.retrieve_model,
-            )
-        for d in corpus:
-            tree = self._build_tree(d)
-            self._trees[d.doc_id] = tree
-            self._nodes[d.doc_id] = self._flatten(tree.get("structure", []))
+        self._client = PageIndexClient(
+            index={"model": self._route(self.model), "storage_path": self.storage,
+                   "summary_concurrency": self.summary_concurrency},
+            chat={"model": self._route(self.retrieve_model)},
+        )
+        self.setup_meta = {"pageindex_version": md.version("pageindex"), "failed": []}
+        t0 = time.perf_counter()
+        _SINK.active = self.setup_usage
+        try:
+            for d in corpus:
+                path = self._source_path(d)
+                # Vertex shared capacity refuses bursts at times (429); a
+                # document is retried after a pause before it counts as failed.
+                last = None
+                for attempt in range(4):
+                    try:
+                        res = self._client.submit_document(path)
+                        self._doc_ids[d.doc_id] = res["doc_id"]
+                        last = None
+                        break
+                    except Exception as e:
+                        last = e
+                        if "429" not in str(e) and "RESOURCE_EXHAUSTED" not in str(e) and "Rate" not in str(e):
+                            break
+                        time.sleep(60 * (attempt + 1))
+                if last is not None:  # one bad document must not void the run
+                    self.setup_meta["failed"].append({"doc": d.doc_id, "error": str(last)[:300]})
+        finally:
+            _SINK.active = None
         self.setup_seconds = time.perf_counter() - t0
+
+    def _source_path(self, d: Doc) -> str:
+        """PageIndex's own parser reads the original: a PDF as is, anything
+        else as Markdown (its other supported input)."""
+        if d.path and d.path.lower().endswith((".pdf", ".md")):
+            return d.path
+        p = Path(self.storage) / "src" / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', d.doc_id)[:150]}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(d.content, encoding="utf-8")
+        return str(p)
 
     def teardown(self) -> None:
         pass
 
-    def _ensure_importable(self) -> None:
-        if self.repo_path and self.repo_path not in sys.path:
-            sys.path.insert(0, self.repo_path)
-        try:
-            import pageindex  # noqa: F401  type: ignore
-        except ImportError as e:
-            raise ImportError(
-                "PageIndex isn't importable. Clone VectifyAI/PageIndex and "
-                "`pip install -r requirements.txt`, then set repo_path= or "
-                "VLBENCH_PAGEINDEX_PATH to the checkout (the Docker bundle does "
-                "this for you)."
-            ) from e
-
-    # -- tree building (their real functions) ------------------------------
-    def _build_tree(self, d: Doc) -> dict:
-        if self.mode == "cloud":
-            path = d.path or self._write_temp(d)
-            doc_id = self._client.index(path, mode="auto")
-            self._cloud_docs[d.doc_id] = doc_id
-            return json.loads(self._client.get_document_structure(doc_id))
-
-        from pageindex import md_to_tree, page_index  # type: ignore
-
-        if d.path and d.path.lower().endswith(".pdf"):
-            return page_index(
-                d.path, model=self.model, if_add_node_id="yes",
-                if_add_node_summary=self.node_summaries, if_add_node_text="yes",
-            )
-        # markdown/text: md_to_tree is async and reads from a path on disk
-        md_path = (
-            d.path if (d.path and d.path.lower().endswith(".md"))
-            else self._write_temp(d, ".md")
-        )
-        return asyncio.run(
-            md_to_tree(
-                md_path, model=self.model, if_add_node_id="yes",
-                if_add_node_summary=self.node_summaries, if_add_node_text="yes",
-            )
-        )
-
-    def _write_temp(self, d: Doc, suffix: str = ".md") -> str:
-        f = tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8")
-        f.write(d.content)
-        f.close()
-        return f.name
-
-    def _flatten(self, structure: list) -> Dict[str, dict]:
-        nodes: Dict[str, dict] = {}
-
-        def walk(node: dict, prefix: List[str]) -> None:
-            title = node.get("title", "") or ""
-            here = prefix + [title] if title else prefix
-            nid = str(node.get("node_id", len(nodes)))
-            node["_path"] = here
-            nodes[nid] = node
-            for ch in node.get("nodes", []) or []:
-                walk(ch, here)
-
-        for root in structure or []:
-            walk(root, [])
-        return nodes
-
-    def _node_text(self, doc_id: str, node: dict) -> str:
-        if node.get("text"):
-            return node["text"]
-        # cloud structure has no text -> fetch the node's pages on demand
-        if self.mode == "cloud" and self._client is not None:
-            start, end = node.get("start_index"), node.get("end_index")
-            if start is not None:
-                pages = f"{start}-{end}" if end and end != start else str(start)
-                try:
-                    payload = json.loads(
-                        self._client.get_page_content(self._cloud_docs[doc_id], pages)
-                    )
-                    return "\n".join(p.get("content", "") for p in payload)
-                except Exception:
-                    pass
-        return node.get("summary") or node.get("prefix_summary") or ""
-
-    # -- retrieval (PageIndex's reasoning pattern, priced on our table) -----
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
-        nodes = self._nodes.get(question.doc_id)
-        if not nodes:
-            return RetrievalResult(
-                qid=question.qid, system=self.name, query=question.question,
-                error=f"no tree for {question.doc_id!r}", cold=cold,
-            )
-        outline = "\n".join(
-            f"{nid}\t{' > '.join(n.get('_path', []))}\t"
-            f"{(n.get('summary') or n.get('prefix_summary') or '')[:160]}"
-            for nid, n in nodes.items()
-        )
+        pid = self._doc_ids.get(question.doc_id)
+        if pid is None:
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question, cold=cold,
+                                   error=f"document {question.doc_id!r} was not indexed by PageIndex")
+        usage = Usage()
+        sections: List[RetrievedSection] = []
+        tools: List[str] = []
+        pending: Dict[str, str] = {}
         t0 = time.perf_counter()
+        _SINK.active = usage
         try:
-            out = complete(
-                self.retrieve_model, _NAV_SYSTEM,
-                f"QUESTION: {question.question}\n\nOUTLINE (id\\tpath\\tsummary):\n{outline}",
-                max_tokens=512, json_mode=True,
-            )
-        except Exception as e:  # pragma: no cover - network/env dependent
-            return RetrievalResult(
-                qid=question.qid, system=self.name, query=question.question,
-                error=str(e), cold=cold,
-            )
-        latency = (time.perf_counter() - t0) * 1000.0
-        try:
-            chosen = json.loads(out.text).get("node_ids", [])[:k]
-        except json.JSONDecodeError:
-            chosen = []
-        sections = [
-            RetrievedSection(
-                content=self._node_text(question.doc_id, nodes[nid]),
-                section_id=str(nid),
-                title=nodes[nid].get("title", ""),
-                title_path=nodes[nid].get("_path", []),
-            )
-            for nid in chosen
-            if nid in nodes
-        ]
+            stream = self._client.chat(question.question, doc_id=pid, stream=True)
+            for ev in stream.events:
+                kind = ev.get("type")
+                if kind == "tool_call":
+                    tools.append(str(ev.get("name")))
+                    pending[str(ev.get("call_id") or len(tools))] = str(ev.get("name"))
+                elif kind == "tool_result":
+                    name = str(ev.get("name") or "")
+                    if name != "get_document_structure" and _CONTENT_TOOL.search(name):
+                        text = _output_text(ev.get("output"))
+                        if text.strip():
+                            sections.append(RetrievedSection(content=text, section_id=f"pi:{len(sections)}",
+                                                             title=name))
+                elif kind == "answer":
+                    break  # retrieval is done once the agent starts answering
+        except Exception as e:  # pragma: no cover - network
+            _SINK.active = None
+            return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
+                                   error=str(e)[:500], cold=cold, trace={"tools": tools})
+        finally:
+            _SINK.active = None
         return RetrievalResult(
             qid=question.qid, system=self.name, query=question.question,
-            sections=sections, usage=out.usage, latency_ms=latency,
-            strategy=f"pageindex-{self.mode}", cold=cold,
-            trace={"ingest_cost_measured": False},
+            sections=sections[:k], usage=usage, latency_ms=(time.perf_counter() - t0) * 1000.0,
+            strategy="pageindex-agent", cold=cold, trace={"tools": tools},
         )

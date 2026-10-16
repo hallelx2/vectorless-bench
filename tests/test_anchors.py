@@ -45,3 +45,37 @@ def test_relevance_labels_order_preserved():
         RetrievedSection(content="this has the target inside"),
     ]
     assert anchors.relevance_labels(secs, golds) == [False, True]
+
+
+def test_span_number_fallback_needs_a_distinctive_number():
+    assert not anchors.span_present("8", "In 1987 there were 12 offices.")
+    assert anchors.span_present("$1,577", "capex of 1577 million")
+
+
+def test_span_survives_pdf_line_breaks_and_a_dropped_word():
+    span = "the kernel uniqueness becomes very small as the number of training samples grows large"
+    pdf = "In Algorithm 3 we see that the kernel uni-\nqueness becomes very small as the number of training samples grows large [7]."
+    assert anchors.span_present(span, pdf)
+    pdf2 = "the kernel uniqueness becomes very small as the number of training samples grows big"
+    assert anchors.span_present(span, pdf2)  # one word differs; a 10+ word run remains
+    assert not anchors.span_present(span, "the kernel is small")
+
+
+def test_page_text_anchor_matches_overlapping_sections_only():
+    from vectorless_bench.schema import GoldAnchor, RetrievedSection
+
+    page = " ".join(f"word{i}" for i in range(200))
+    g = GoldAnchor(doc_id="d", page=3, page_text=page)
+    inside = RetrievedSection(content=" ".join(f"word{i}" for i in range(40, 120)))
+    other = RetrievedSection(content=" ".join(f"other{i}" for i in range(200)))
+    assert anchors.match_anchor(inside, g)
+    assert not anchors.match_anchor(other, g)
+    assert anchors.match_anchor(RetrievedSection(content="x", page=3), g)
+
+
+def test_probes_skip_s2orc_placeholders():
+    from vectorless_bench.datasets._files import probes
+
+    para = " ".join(["alpha"] * 5 + ["SECREF3"] + [f"w{i}" for i in range(30)])
+    ws = probes(para)
+    assert ws and all("secref" not in w for w in ws)

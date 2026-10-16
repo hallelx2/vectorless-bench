@@ -294,6 +294,8 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
     if result is None:
         return RunRecord(latency_ms=wall_ms, wall_ms=wall_ms, usage={}, metrics={}, error=err, **base)
     m = {} if result.error else metrics.score_question(q, result, cfg.k)
+    if m and "gold_reachable" in q.meta:
+        m["gold_reachable"] = 1.0 if q.meta["gold_reachable"] else 0.0
     # Judge only on the first repeat: answer quality doesn't need rerunning, and
     # it keeps judge spend from scaling with the determinism repeat count.
     if judge is not None and not result.error and repeat == 0:
@@ -302,11 +304,19 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         m["answer_faithful"] = jr.faithful
         m["answered"] = jr.answered
         m["judge_usd"] = jr.usage.cost_usd  # tracked apart from system cost
+        if jr.verdict:
+            # every graded row carries all four flags, so each share is over
+            # the same denominator (the graded questions)
+            for v in ("correct", "partially_correct", "incorrect", "abstained"):
+                m[f"verdict_{v}"] = 1.0 if jr.verdict == v else 0.0
+        if jr.verdict_repeat is not None:
+            m["grade_repeat_agree"] = 1.0 if jr.verdict_repeat == jr.verdict else 0.0
     return RunRecord(
         latency_ms=wall_ms, wall_ms=wall_ms, reported_ms=result.latency_ms,
         usage=usage_to_dict(result.usage), metrics=m,
         selected_ids=[s.section_id for s in result.sections],
         strategy=result.strategy, cold=result.cold, error=result.error,
+        trace=dict(result.trace or {}),
         timing=result.trace.get("timing") if isinstance(result.trace, dict) else None,
         **base,
     )

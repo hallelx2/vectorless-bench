@@ -24,8 +24,13 @@ _PUNCT = re.compile(r"[^\w\s]")
 _NUM = re.compile(r"(?<![\w.])\$?\s?-?\d[\d,]*(?:\.\d+)?%?")
 
 
+_HYPHEN_BREAK = re.compile(r"(\w)-[ \t]*\r?\n[ \t]*(\w)")
+
+
 def norm_text(s: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — for span search."""
+    """Lowercase, rejoin words a PDF hyphenated across a line break, strip
+    punctuation, collapse whitespace — for span search."""
+    s = _HYPHEN_BREAK.sub(r"\1\2", s)
     return _WS.sub(" ", _PUNCT.sub(" ", s.lower())).strip()
 
 
@@ -61,13 +66,39 @@ def span_present(span: str, content: str) -> bool:
     if not span:
         return False
     nspan, ncontent = norm_text(span), norm_text(content)
-    if nspan and nspan in ncontent:
+    if nspan and f" {nspan} " in f" {ncontent} ":  # whole words: '8' is not in '1987'
+        return True
+    if _long_window_present(nspan.split(), ncontent):
         return True
     span_nums = _numbers(span)
-    if span_nums:
+    if span_nums and _numbers_distinctive(span_nums):
         content_nums = set(_numbers(content))
         return all(n in content_nums for n in span_nums)
     return False
+
+
+def _long_window_present(words: List[str], ncontent: str) -> bool:
+    """A long span whose PDF rendering differs in a word or two (a ligature,
+    a dropped reference marker, a broken line) still counts when a contiguous
+    run of at least 8 words and 60% of it appears verbatim. Short spans get
+    no such slack: for them the exact match above is the test."""
+    n = len(words)
+    if n < 10:
+        return False
+    need = max(8, int(0.6 * n + 0.999))
+    for i in range(0, n - need + 1):
+        if " ".join(words[i : i + need]) in ncontent:
+            return True
+    return False
+
+
+def _numbers_distinctive(nums: List[str]) -> bool:
+    """The number-only fallback is safe for '1,577.0' vs '$1577' but not for
+    a bare '8', which most sections contain. Allowed when the span carries two
+    or more numbers, or one with at least three significant digits."""
+    if len(nums) >= 2:
+        return True
+    return len(nums[0].replace(".", "").replace("-", "").lstrip("0")) >= 3
 
 
 def path_matches(gold_path: Sequence[str], cand_path: Sequence[str]) -> bool:
@@ -100,7 +131,33 @@ def match_anchor(section: RetrievedSection, anchor: GoldAnchor) -> bool:
         anchor.page == section.page
     ):
         return True
+    if anchor.page_text and page_text_overlaps(section.content, anchor.page_text):
+        return True
     return False
+
+
+_SHINGLE = 6
+
+
+def _shingles(ntext: str) -> set:
+    w = ntext.split()
+    return {" ".join(w[i : i + _SHINGLE]) for i in range(max(0, len(w) - _SHINGLE + 1))}
+
+
+def page_text_overlaps(content: str, page_text: str) -> bool:
+    """True when a returned section carries a real part of the gold page:
+    it covers 30% of the page's six-word shingles, or (a short section
+    lying inside the page) 50% of its own shingles are on the page and it
+    has at least 20 of them. A page with fewer than 10 shingles of text
+    (a figure, a scanned slide) cannot be matched this way."""
+    page = _shingles(norm_text(page_text))
+    if len(page) < 10:
+        return False
+    sec = _shingles(norm_text(content))
+    if not sec:
+        return False
+    shared = len(page & sec)
+    return shared >= 0.3 * len(page) or (shared >= 20 and shared >= 0.5 * len(sec))
 
 
 def relevance_labels(

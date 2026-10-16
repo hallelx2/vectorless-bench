@@ -27,11 +27,11 @@ class RunConfig:
     # models
     # Every generative call is Gemini on Vertex; every embedding is Gemini on
     # Vertex or a local BGE model (see _llm.py). validate() enforces it.
-    model: str = "gemini-2.5-flash-lite"  # the answer model, shared by every system
+    model: str = "gemini-3.5-flash-lite"  # the answer model, shared by every system (HAL-3048)
     embedding_model: str = "gemini-embedding-2"
     judge: bool = False
-    judge_model: str = "gemini-2.5-flash-lite"  # HAL-3047 moves grading to Jev
-    gen_model: str = "gemini-2.5-flash-lite"  # answer generator for the judge axis
+    judge_model: str = "jev-latest"  # graded on Jev, a closed-set verdict (HAL-3047)  # HAL-3047 moves grading to Jev
+    gen_model: str = "gemini-3.5-flash-lite"  # answer generator for the judge axis
 
     # How the run is timed (HAL-3032). "latency": one question at a time, every
     # sample bracketed by host evidence and rerun if the machine was busy.
@@ -52,13 +52,14 @@ class RunConfig:
     def params_for(self, system: str) -> Dict[str, Any]:
         """Factory kwargs for a system: shared models + its own overrides."""
         base: Dict[str, Any] = {}
-        if system in ("vectorless", "full_context"):
+        if system in ("vectorless", "full_context", "agentic_grep", "memwalker", "readagent", "raptor"):
             base["model"] = self.model
         if system == "vector_rag":
             base["embedding_model"] = self.embedding_model
         if system == "pageindex":
-            # reasoning/selection runs on our priced model; tree-build model can
-            # be overridden in system_params (PageIndex's own default otherwise).
+            # PageIndex indexes and chats on the run's shared model unless
+            # system_params override either.
+            base["model"] = self.model
             base["retrieve_model"] = self.model
         base.update(self.system_params.get(system, {}))
         return base

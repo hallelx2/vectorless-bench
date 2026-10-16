@@ -8,6 +8,7 @@ imports a heavy dependency.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Dict, List
 
 from .base import Retriever
@@ -70,6 +71,52 @@ def _pageindex(**cfg: Any) -> Retriever:
 register("mock", _mock)
 register("vectorless", _vectorless)
 register("vector_rag", _vector_rag)
+
+
+def _vector_bge(**cfg: Any) -> Retriever:
+    """The open-weights baseline: the same pipeline with a local BGE model on
+    CPU (no GPU, no network, zero embedding spend)."""
+    from .vector_rag import VectorRagRetriever
+
+    cfg.setdefault("embedding_model", os.environ.get("VLBENCH_BGE_MODEL", "BAAI/bge-base-en-v1.5"))
+    r = VectorRagRetriever(**cfg)
+    r.name = "vector_bge"
+    return r
+
+
+register("vector_bge", _vector_bge)
 register("bm25", _bm25)
 register("full_context", _full_context)
 register("pageindex", _pageindex)
+
+
+def _agentic_grep(**cfg: Any) -> Retriever:
+    from .agentic_grep import AgenticGrepRetriever
+
+    return AgenticGrepRetriever(**cfg)
+
+
+register("agentic_grep", _agentic_grep)
+
+
+def _memwalker(**cfg: Any) -> Retriever:
+    from .memwalker import MemWalkerRetriever
+
+    return MemWalkerRetriever(**cfg)
+
+
+def _readagent(**cfg: Any) -> Retriever:
+    from .readagent import ReadAgentRetriever
+
+    return ReadAgentRetriever(**cfg)
+
+
+def _raptor(**cfg: Any) -> Retriever:
+    from .raptor import RaptorRetriever
+
+    return RaptorRetriever(**cfg)
+
+
+register("memwalker", _memwalker)
+register("readagent", _readagent)
+register("raptor", _raptor)

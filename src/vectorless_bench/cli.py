@@ -91,6 +91,64 @@ def _print_headline(results, k: int) -> None:
               f"{r['cost']['quality_per_1k_usd']:>10.1f} {r['n']:>4} {r['errors']:>4}")
 
 
+def cmd_datasets(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .datasets import available as datasets_available
+    from .datasets import build_dataset
+
+    if args.action == "list":
+        print("\n".join(datasets_available()))
+        return 0
+    names = datasets_available()[1:] if args.name == "all" else [args.name]
+    params = _json.loads(args.params) if args.params else {}
+    status = 0
+    for name in names:
+        d = build_dataset(name, **params)
+        try:
+            if args.action == "fetch":
+                d.fetch()
+            else:
+                print(_json.dumps(d.check(), indent=1))
+        except Exception as e:  # keep going across datasets
+            status = 1
+            print(f"[vlbench] {name}: {args.action} failed: {e}")
+    return status
+
+
+def cmd_embed(args: argparse.Namespace) -> int:
+    """Build the per-document embedding cache for a dataset ahead of a run,
+    with the same chunking the vector systems use. The seconds each document
+    took are stored with its vectors and reported by the run that reads them."""
+    import json as _json
+    import os
+
+    from .datasets import build_dataset
+    from .retrievers.vector_rag import VectorRagRetriever
+
+    os.environ.setdefault("VLBENCH_EMBED_PROGRESS", "1")
+    names = [n for n in __import__("vectorless_bench.datasets", fromlist=["available"]).available() if n != "fixtures"] \
+        if args.name == "all" else [args.name]
+    for name in names:
+        params = _json.loads(args.params) if args.params else {}
+        if args.limit:
+            # the runner's own selection, so the cache covers exactly the
+            # documents a `run --limit N --seed S` will ask for
+            from .config import RunConfig
+            from .runner import _load_dataset
+
+            _, corpus, _ = _load_dataset(RunConfig(dataset=name, dataset_params=params, limit=args.limit,
+                                                   sample_seed=args.seed))
+        else:
+            corpus = build_dataset(name, **params).corpus()
+        r = VectorRagRetriever(embedding_model=args.model, backend="memory",
+                               chunk_tokens=args.chunk_tokens, overlap_tokens=args.overlap_tokens)
+        r.setup(corpus)
+        print(_json.dumps({"dataset": name, "model": args.model, "docs": len(corpus), "chunks": len(r._chunks),
+                           "embedding_usd": round(r.setup_usage.cost_usd, 4), **r.setup_meta}), flush=True)
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     from .hostprobe import serve
 
@@ -128,6 +186,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("systems", help="list available systems and datasets")
     s.set_defaults(func=cmd_systems)
+
+    ds = sub.add_parser("datasets", help="list, fetch or check the datasets")
+    ds.add_argument("action", choices=["list", "fetch", "check"])
+    ds.add_argument("name", nargs="?", default="all", help="a dataset name, or all")
+    ds.add_argument("--params", help='dataset params as JSON, e.g. \'{"mini": true}\'')
+    ds.set_defaults(func=cmd_datasets)
+
+    em = sub.add_parser("embed", help="pre-build the embedding cache for a dataset")
+    em.add_argument("name", help="a dataset name, or all")
+    em.add_argument("--model", default="BAAI/bge-base-en-v1.5")
+    em.add_argument("--chunk-tokens", type=int, default=512)
+    em.add_argument("--overlap-tokens", type=int, default=64)
+    em.add_argument("--params", help="dataset params as JSON")
+    em.add_argument("--limit", type=int, help="only the documents of `run --limit N` (same sample)")
+    em.add_argument("--seed", type=int, default=0, help="the run's sample seed")
+    em.set_defaults(func=cmd_embed)
 
     pr = sub.add_parser("probe", help="host evidence agent (run on the engine VM)")
     pr.add_argument("--port", type=int, default=9101)
