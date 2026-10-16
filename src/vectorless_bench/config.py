@@ -80,8 +80,8 @@ def validate(cfg: "RunConfig") -> None:
         for k, v in params.items():
             if isinstance(v, str) and (k == "model" or k.endswith("_model")) and v:
                 named[f"system_params.{system}.{k}"] = v
-    if cfg.phase not in ("latency", "throughput"):
-        raise ValueError(f"phase must be latency or throughput, got {cfg.phase!r}")
+    if cfg.phase not in ("latency", "throughput", "accuracy"):
+        raise ValueError(f"phase must be latency, throughput or accuracy, got {cfg.phase!r}")
     if cfg.phase == "throughput" and cfg.concurrency < 1:
         raise ValueError("throughput needs concurrency >= 1")
     bad = {k: v for k, v in named.items() if not _is_vertex_or_local(v)}

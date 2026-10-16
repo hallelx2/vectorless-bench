@@ -88,8 +88,14 @@ def collect(run_dirs: Iterable[Path]) -> Dict[str, Dict[str, Dict[str, Any]]]:
                 cell["throughput"] = (res.get("speed") or {}).get("throughput")
                 cell["throughput_run"] = e["dir"]
                 continue
-            cell.update(result=res, k=e["k"], run=e["dir"], created_at=e["manifest"].get("created_at"),
-                        manifest=e["manifest"])
+            if (res.get("n") or 0) > 0:
+                # quality, cost and answers: the latest run that answered questions
+                cell.update(result=res, k=e["k"], run=e["dir"], created_at=e["manifest"].get("created_at"),
+                            manifest=e["manifest"])
+            if (res.get("speed") or {}).get("samples"):
+                # speed: only runs timed on the isolated rig carry latency samples
+                # (an accuracy pass records none)
+                cell["timing"] = {"latency_ms": res.get("latency_ms"), "speed": res.get("speed"), "run": e["dir"]}
     return board
 
 
@@ -144,9 +150,10 @@ def row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
         "usd_per_correct": _num(_get(r, "cost", "cost_per_correct_usd")),
         "grading_usd_per_question": (judge_usd / graded) if judge_usd is not None and graded else None,
         "context_tokens": _num(_get(r, "quality", "context_tokens")),
-        "p50_ms": _num(_get(r, "latency_ms", "p50")) if _get(r, "speed", "samples") else None,
-        "p95_ms": _num(_get(r, "latency_ms", "p95")) if _get(r, "speed", "samples") else None,
-        "flagged_reruns": _get(r, "speed", "reruns"),
+        "p50_ms": _num(_get(cell, "timing", "latency_ms", "p50")),
+        "p95_ms": _num(_get(cell, "timing", "latency_ms", "p95")),
+        "flagged_reruns": _get(cell, "timing", "speed", "reruns"),
+        "timing_run": _get(cell, "timing", "run"),
         "questions_per_minute": _num(tp.get("questions_per_minute")) if isinstance(tp, dict) else None,
         "ingest_seconds": _num(_get(r, "ingest", "setup_seconds")),
         "run": cell.get("run"),

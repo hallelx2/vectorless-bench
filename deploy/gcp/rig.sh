@@ -9,6 +9,16 @@
 #   deploy/gcp/rig.sh status                 # what is running, and the engine's version
 #   deploy/gcp/rig.sh down                   # delete both VMs (results stay in GCS)
 #
+# Parallel accuracy workers (HAL-3143). A worker runs one dataset's accuracy
+# pass: quality, cost and graded answers, with no timing recorded as speed.
+# It shares the engine VM and the Vertex project; it has its own harness,
+# pgvector and rival indexes. Timed numbers still come only from the rig.
+#
+#   deploy/gcp/rig.sh data-push              # on the bench VM: datasets + embedding cache -> GCS
+#   deploy/gcp/rig.sh worker-up NAME         # create a worker (WORKER_MACHINE, default e2-standard-2)
+#   deploy/gcp/rig.sh worker-run NAME "D1 D2"   # pull each dataset, run its accuracy pass, upload
+#   deploy/gcp/rig.sh worker-down NAME
+#
 # Knobs (env): PROJECT ZONE MACHINE ENGINE_REF BENCH_REF BUCKET MODEL THINKING_BUDGET
 # Prereqs: gcloud logged in; the vlbench-runner service account (Vertex user,
 # bucket writer, secret accessor); secrets vlbench-typesafe-api-key (the Jev
@@ -33,10 +43,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 g() { gcloud --project="$PROJECT" --quiet "$@"; }
 on() { local vm=$1; shift; g compute ssh "$vm" --zone="$ZONE" --command="$*"; }
 
-case $MACHINE in
-  e2-*|*-micro|*-small|*-medium)
-    echo "refusing $MACHINE: shared-core / E2 machines show CPU steal; use n2d, n2 or c3" >&2; exit 2 ;;
-esac
+WORKER_MACHINE=${WORKER_MACHINE:-e2-standard-2}
+
+rig_machine_ok() {
+  # Timed VMs only: a worker's numbers are never read as speed.
+  case $MACHINE in
+    e2-*|*-micro|*-small|*-medium)
+      echo "refusing $MACHINE for the rig: shared-core / E2 machines show CPU steal; use n2d, n2 or c3" >&2; exit 2 ;;
+  esac
+}
 
 ensure_secrets() {
   g services enable secretmanager.googleapis.com >/dev/null
@@ -55,16 +70,16 @@ ensure_secrets() {
 }
 
 create_vm() {
-  local name=$1 role=$2
+  local name=$1 role=$2 machine=${3:-$MACHINE} disk=${4:-100GB} disk_type=${5:-pd-balanced}
   g compute instances describe "$name" --zone="$ZONE" >/dev/null 2>&1 && { echo "$name exists"; return; }
-  g compute instances create "$name" --zone="$ZONE" --machine-type="$MACHINE" \
+  g compute instances create "$name" --zone="$ZONE" --machine-type="$machine" \
     --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud \
-    --boot-disk-size=100GB --boot-disk-type=pd-balanced \
+    --boot-disk-size="$disk" --boot-disk-type="$disk_type" \
     --service-account="$SA" --scopes=cloud-platform \
     --labels="vlbench=1,role=$role" \
     --metadata="engine-ref=$ENGINE_REF,bench-ref=$BENCH_REF,model=$MODEL,thinking-budget=$THINKING_BUDGET,role=$role" \
     --metadata-from-file=startup-script="$HERE/rig-startup.sh" >/dev/null
-  echo "created $name ($MACHINE, $ZONE)"
+  echo "created $name ($machine, $ZONE)"
 }
 
 wait_ready() {
@@ -82,6 +97,7 @@ engine_ip() { g compute instances describe "$ENGINE_VM" --zone="$ZONE" --format=
 cmd=${1:-}
 case $cmd in
   up)
+    rig_machine_ok
     ensure_secrets
     create_vm "$ENGINE_VM" engine
     create_vm "$BENCH_VM" bench
@@ -112,6 +128,60 @@ case $cmd in
     left=$(g compute instances list --filter="labels.vlbench=1 AND labels.role!=dev" --format='value(name)')
     [ -z "$left" ] && echo "no rig VMs left running" || echo "still running: $left"
     ;;
+  data-push)
+    # Run on the bench VM, from the repo root: every fetched dataset and the
+    # per-document embedding cache, so a worker pulls instead of re-fetching.
+    gcloud storage rsync -r --quiet data "$BUCKET/data"
+    echo "pushed data/ -> $BUCKET/data"
+    ;;
+  worker-up)
+    NAME=${2:?usage: rig.sh worker-up NAME}
+    ensure_secrets
+    # Standard disk: a worker holds one dataset (under 1 GB) and the
+    # environment; it does not need SSD, and pd-standard does not count
+    # against the SSD quota.
+    create_vm "$NAME" worker "$WORKER_MACHINE" 40GB pd-standard
+    IP=$(engine_ip)
+    wait_ready "$NAME"
+    on "$NAME" "sudo bash -c 'touch /etc/vlbench.env && chmod 600 /etc/vlbench.env && sed -i \"/^VECTORLESS_BASE_URL=/d\" /etc/vlbench.env && echo VECTORLESS_BASE_URL=http://$IP:8080 >> /etc/vlbench.env'"
+    on "$NAME" "curl -sf http://$IP:8080/v1/version && echo"
+    ;;
+  worker-run)
+    NAME=${2:?usage: rig.sh worker-run NAME "DATASET [DATASET ...]"}
+    DATASETS=${3:?usage: rig.sh worker-run NAME "DATASET [DATASET ...]"}
+    STAMP=$(date +%Y%m%d-%H%M%S)
+    JOB="acc-$NAME-$STAMP"
+    # The run script goes over ssh's stdin (no nested quoting), then runs
+    # detached so it outlives this session. The worker runs its datasets in
+    # turn; each result directory and the log go to GCS as soon as it ends.
+    g compute ssh "$NAME" --zone="$ZONE" --command="sudo tee /root/$JOB.sh >/dev/null" <<EOS
+set -uo pipefail
+set -a; . /etc/vlbench.env; set +a
+cd /opt/vectorless-bench
+git fetch -q origin && git checkout -q $BENCH_REF && git pull -q --ff-only || true
+HOME=/root /usr/local/bin/uv sync -q --extra all
+mkdir -p data/cache
+gcloud storage rsync -r --quiet $BUCKET/data/cache data/cache
+failed=""
+for d in $DATASETS; do
+  echo "=== \$(date -u +%FT%TZ) \$d"
+  mkdir -p data/\$d
+  gcloud storage rsync -r --quiet $BUCKET/data/\$d data/\$d
+  out=/results/acc-\$d-$STAMP
+  HOME=/root /usr/local/bin/uv run --no-sync vlbench run --config configs/pilot/\$d.yaml --phase accuracy --out \$out || failed="\$failed \$d"
+  gcloud storage cp -r \$out $BUCKET/runs/
+  gcloud storage cp /root/$JOB.log $BUCKET/runs/$JOB.log
+done
+echo "=== \$(date -u +%FT%TZ) worker done; failed:\${failed:- none}"
+gcloud storage cp /root/$JOB.log $BUCKET/runs/$JOB.log
+EOS
+    on "$NAME" "sudo bash -c 'setsid nohup bash /root/$JOB.sh > /root/$JOB.log 2>&1 < /dev/null &'; echo started"
+    echo "started $JOB on $NAME ($DATASETS); results -> $BUCKET/runs/acc-<dataset>-$STAMP/"
+    ;;
+  worker-down)
+    NAME=${2:?usage: rig.sh worker-down NAME}
+    g compute instances delete "$NAME" --zone="$ZONE" >/dev/null 2>&1 && echo "deleted $NAME" || echo "$NAME not present"
+    ;;
   *)
-    sed -n 2,17p "$0"; exit 2 ;;
+    sed -n 2,26p "$0"; exit 2 ;;
 esac
