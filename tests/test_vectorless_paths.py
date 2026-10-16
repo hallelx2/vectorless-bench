@@ -183,3 +183,45 @@ def test_corpus_question_goes_to_corpus_mode_without_its_gold_documents():
     assert res.trace["mode"] == "corpus" and res.trace["coverage"] == 0.81
     assert res.trace["documents_read"] == ["b", "a"]
     assert res.usage.cost_usd == 0.00004 and res.latency_ms == 4100.0
+
+
+def test_setup_ingests_concurrently_and_counts_reused_documents():
+    import threading
+    import time
+    from types import SimpleNamespace as NS
+
+    from vectorless_bench.retrievers.vectorless import VectorlessRetriever
+    from vectorless_bench.schema import Doc
+
+    lock = threading.Lock()
+    state = {"in_flight": 0, "peak": 0, "keys": []}
+
+    class _Client:
+        def version(self):
+            return NS(version="dev-test")
+
+        def ingest_document(self, source, filename, content_type, idempotency_key=None):
+            with lock:
+                state["keys"].append(idempotency_key)
+                state["in_flight"] += 1
+                state["peak"] = max(state["peak"], state["in_flight"])
+            time.sleep(0.05)
+            with lock:
+                state["in_flight"] -= 1
+            return NS(document_id="srv_" + filename)
+
+        def wait_for_ready(self, doc_id, timeout):
+            old = doc_id.endswith("d0.md")  # one document an earlier run ingested
+            return NS(created_at="2020-01-01T00:00:00Z" if old else "2999-01-01T00:00:00Z")
+
+        def get_document_tree(self, doc_id):
+            return NS(sections=[])
+
+    r = VectorlessRetriever.__new__(VectorlessRetriever)
+    r._client, r.ingest_concurrency, r.reuse_documents, r.ingest_timeout = _Client(), 4, True, 5
+    r._doc_ids, r._paths, r.setup_usage = {}, {}, None
+    r.setup([Doc(doc_id=f"d{i}", title="t", content=f"body {i}") for i in range(8)])
+    assert state["peak"] > 1, "ingest must run concurrently"
+    assert len(r._doc_ids) == 8 and r._doc_ids["d3"] == "srv_d3.md"
+    assert all(k and k.startswith("vlbench-") for k in state["keys"]) and len(set(state["keys"])) == 8
+    assert r.setup_meta["reused_documents"] == 1 and r.setup_meta["ingest_concurrency"] == 4
