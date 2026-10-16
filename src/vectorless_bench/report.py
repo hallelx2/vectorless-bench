@@ -134,6 +134,7 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
                 "accuracy": avg_metric("answer_correct"),
                 "correct": avg_metric("verdict_correct"),
                 "partially_correct": avg_metric("verdict_partially_correct"),
+                "incorrect": avg_metric("verdict_incorrect"),
                 "abstained": avg_metric("verdict_abstained"),
                 "grade_repeat_agreement": avg_metric("grade_repeat_agree"),
                 "judge_usd": sum(r["metrics"].get("judge_usd", 0.0) for r in ok),

@@ -178,8 +178,3 @@ class FinanceBenchDataset(Dataset):
             )
         return docs
 
-    def questions_for_available_corpus(self) -> List[Question]:
-        """Questions whose source document text is actually present — what the
-        runner should evaluate so missing docs don't count as failures."""
-        have = {d.doc_id for d in self.corpus()}
-        return [q for q in self.questions() if q.doc_id in have]

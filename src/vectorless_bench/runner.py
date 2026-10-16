@@ -305,7 +305,10 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         m["answered"] = jr.answered
         m["judge_usd"] = jr.usage.cost_usd  # tracked apart from system cost
         if jr.verdict:
-            m[f"verdict_{jr.verdict}"] = 1.0
+            # every graded row carries all four flags, so each share is over
+            # the same denominator (the graded questions)
+            for v in ("correct", "partially_correct", "incorrect", "abstained"):
+                m[f"verdict_{v}"] = 1.0 if jr.verdict == v else 0.0
         if jr.verdict_repeat is not None:
             m["grade_repeat_agree"] = 1.0 if jr.verdict_repeat == jr.verdict else 0.0
     return RunRecord(
