@@ -172,6 +172,7 @@ def test_corpus_question_goes_to_corpus_mode_without_its_gold_documents():
 
     r = VectorlessRetriever.__new__(VectorlessRetriever)
     r.name, r._client, r.max_hops, r.server_cache_disabled = "vectorless", _Client(), 2, True
+    r.corpus_abstain, r.corpus_card_chars = True, 400
     r._doc_ids = {"a": "srv_a", "b": "srv_b", "c": "srv_c"}
     q = Question(qid="q1", doc_id=CORPUS, question="Did both outlets report 10 billion?",
                  meta={"doc_ids": ["a", "b"]})
@@ -179,6 +180,7 @@ def test_corpus_question_goes_to_corpus_mode_without_its_gold_documents():
 
     assert sorted(sent["document_ids"]) == ["srv_a", "srv_b", "srv_c"], "every ingested document, not the gold ones"
     assert sent["max_evidence"] == 5 and sent["max_hops"] == 2
+    assert sent["abstain"] is True and sent["card_chars"] == 400
     assert res.error is None and res.sections[0].section_id == "b#p1" and res.sections[0].score == 0.93
     assert res.trace["mode"] == "corpus" and res.trace["coverage"] == 0.81
     assert res.trace["documents_read"] == ["b", "a"]

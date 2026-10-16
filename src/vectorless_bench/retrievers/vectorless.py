@@ -110,6 +110,8 @@ class VectorlessRetriever:
         ingest_timeout: float = 600.0,
         query_timeout: float = 300.0,
         max_hops: Optional[int] = None,
+        corpus_card_chars: Optional[int] = None,
+        corpus_abstain: bool = True,
         ingest_concurrency: int = 8,
         reuse_documents: bool = False,
         **_: object,
@@ -134,6 +136,11 @@ class VectorlessRetriever:
         self.max_tokens = max_tokens
         self.max_parallel_calls = max_parallel_calls
         self.max_hops = max_hops  # corpus mode only; None takes the engine's default (3)
+        # Corpus mode: shorter routing cards (the engine's default is 900
+        # characters), and whether the engine may abstain when the collection
+        # does not answer, as every other system may by returning nothing.
+        self.corpus_card_chars = corpus_card_chars
+        self.corpus_abstain = corpus_abstain
         # Documents uploaded at once. Ingest is the engine's work, so setup is
         # timed as wall clock over the whole corpus whatever this is.
         self.ingest_concurrency = max(1, int(ingest_concurrency))
@@ -383,6 +390,8 @@ class VectorlessRetriever:
                 document_ids=list(self._doc_ids.values()),
                 max_evidence=k,
                 max_hops=self.max_hops,
+                abstain=self.corpus_abstain,
+                card_chars=self.corpus_card_chars,
             )
         except Exception as e:  # pragma: no cover - network
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question,
@@ -412,6 +421,8 @@ class VectorlessRetriever:
                 "server_cache_disabled": self.server_cache_disabled,
                 "mode": "corpus",
                 "coverage": resp.coverage,
+                "answerable": getattr(resp, "answerable", True),
+                "abstained": getattr(resp, "abstained", False),
                 "hops": len(resp.hops or []),
                 "documents_considered": resp.documents_considered,
                 "documents_read": read,
