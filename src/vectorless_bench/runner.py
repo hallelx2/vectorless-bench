@@ -101,7 +101,11 @@ def run(cfg: RunConfig, progress: bool = True) -> Path:
     out_dir = _new_run_dir(Path(cfg.out_dir))
     records_path = out_dir / "records.jsonl"
     setup_info: Dict[str, Any] = {}
-    rig = Rig(RigConfig.from_dict(cfg.rig))
+    # An accuracy pass runs on a worker that shares the engine and the
+    # Vertex quota with others: its timings are contaminated by design, so the
+    # rig is off and its rows are marked phase "accuracy", which no speed
+    # figure reads (report and scoreboard take latency from "latency" rows).
+    rig = Rig(RigConfig(enabled=False) if cfg.phase == "accuracy" else RigConfig.from_dict(cfg.rig))
     spend = _Spend(cfg.max_spend_usd)
     stopped: Optional[str] = None
 

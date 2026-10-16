@@ -188,7 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", help="output dir (default: runs/)")
     r.add_argument("--judge", action="store_true", help="enable LLM-judge axis")
     r.add_argument("--warm", action="store_true", help="allow warm caches (not cold)")
-    r.add_argument("--phase", choices=["latency", "throughput"], help="latency (default) or throughput")
+    r.add_argument("--phase", choices=["latency", "throughput", "accuracy"],
+                   help="latency (default, timed on the rig), throughput, or accuracy (quality, cost and "
+                        "answers only, on a worker that shares the engine: no timing is recorded as speed)")
     r.add_argument("--concurrency", type=int, help="questions in flight for --phase throughput")
     r.add_argument("--max-spend", type=float, help="stop once recorded spend reaches this many USD")
     r.add_argument("--engine-probe", help="engine VM probe agent URL, e.g. http://10.128.0.5:9101")

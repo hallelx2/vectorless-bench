@@ -16,12 +16,12 @@ def _run(root: Path, name: str, dataset: str, created: str, rows, k: int = 5) ->
     return d
 
 
-def _rec(system, qid, hit, cost, ms, domain="comparison", native=None):
+def _rec(system, qid, hit, cost, ms, domain="comparison", native=None, phase="latency"):
     m = {"hit@5": hit, "recall@5": hit, "f1@5": hit, "mrr": hit, "ndcg@5": hit, "gold_reachable": 1.0}
     if native is not None:
         m["native_hits@5"] = native
     return {"qid": qid, "system": system, "repeat": 0, "domain": domain, "answer_type": "multihop",
-            "difficulty": "medium", "latency_ms": ms, "wall_ms": ms, "phase": "latency", "flagged": False,
+            "difficulty": "medium", "latency_ms": ms, "wall_ms": ms, "phase": phase, "flagged": False,
             "attempts": 1, "usage": {"cost_usd": cost, "total_tokens": 10, "llm_calls": 1}, "metrics": m}
 
 
@@ -51,3 +51,26 @@ def test_an_unmeasured_cell_is_empty_not_zero(tmp_path):
     build([d], tmp_path / "o")
     row = json.loads((tmp_path / "o" / "scoreboard.json").read_text())["rows"][0]
     assert row["native"] is None and row["answer_accuracy"] is None and row["questions_per_minute"] is None
+
+
+
+def test_speed_comes_only_from_timed_runs_and_quality_from_the_latest(tmp_path):
+    timed = _run(tmp_path, "rig", "qasper", "2026-10-16T10:00:00", [_rec("vectorless", "q1", 0.5, 0.01, 800)])
+    acc = _run(tmp_path, "worker", "qasper", "2026-10-16T12:00:00",
+               [_rec("vectorless", "q1", 1.0, 0.01, 9999, phase="accuracy"),
+                _rec("vectorless", "q2", 1.0, 0.01, 9999, phase="accuracy")])
+    build([timed, acc], tmp_path / "o")
+    row = json.loads((tmp_path / "o" / "scoreboard.json").read_text())["rows"][0]
+    assert row["quality"] == 1.0 and row["n"] == 2, "quality from the latest (accuracy) run"
+    assert row["p50_ms"] == 800 and row["timing_run"] == str(timed), "speed only from the rig-timed run"
+
+    only_acc = _run(tmp_path, "w2", "cuad", "2026-10-16T12:00:00", [_rec("bm25", "q", 1.0, 0.0, 9999, phase="accuracy")])
+    build([only_acc], tmp_path / "o2")
+    row2 = json.loads((tmp_path / "o2" / "scoreboard.json").read_text())["rows"][0]
+    assert row2["p50_ms"] is None, "an accuracy pass alone reports no speed"
+
+
+def test_an_accuracy_run_turns_the_rig_off():
+    from vectorless_bench.config import RunConfig, validate
+
+    validate(RunConfig(dataset="fixtures", phase="accuracy"))
