@@ -47,7 +47,11 @@ def test_cost_summary_quality_per_dollar():
     )
     assert s["mean_cost_usd"] == 0.001
     assert s["cost_per_correct_usd"] == 0.002  # 1 correct of 2
-    assert s["quality_per_1k_usd"] > 0
+    # $1,000 at $0.001 a query is 1,000,000 queries, each worth mean quality 0.5.
+    assert abs(s["quality_per_1k_usd"] - 0.5 * 1000 / 0.001) < 1e-6
+    hit = aggregate.cost_summary(costs=[0.001, 0.001], qualities=[0.2, 0.2],
+                                 total_tokens=[1, 1], llm_calls=[1, 1], corrects=[1.0, 1.0])
+    assert hit["cost_per_correct_usd"] == 0.001, "corrects, not the F1 threshold, decide what is right"
 
 
 def test_near_miss_metric():

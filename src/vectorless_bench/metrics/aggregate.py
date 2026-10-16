@@ -6,7 +6,7 @@ LLM-as-retriever engine.
 from __future__ import annotations
 
 import statistics
-from typing import Dict, List, Sequence, Set
+from typing import Optional, Dict, List, Sequence, Set
 
 
 def percentiles(values: Sequence[float]) -> Dict[str, float]:
@@ -37,15 +37,21 @@ def cost_summary(
     qualities: Sequence[float],
     total_tokens: Sequence[int],
     llm_calls: Sequence[int],
+    corrects: Optional[Sequence[float]] = None,
 ) -> Dict[str, float]:
     """Cost reported ALWAYS alongside quality — never in isolation.
 
-    `cost_per_correct` divides total spend by the number of questions the system
-    actually got right (quality >= 0.5), which is the metric that exposes a
-    cheap-but-wrong system and a right-but-ruinous one alike."""
+    `cost_per_correct` divides total spend by the number of questions the
+    system got right, which exposes a cheap-but-wrong system and a
+    right-but-ruinous one alike. "Right" is `corrects` when given (the
+    graded answer, or hit@k for retrieval-only runs); without it, a
+    question counts as right when its quality is at least 0.5."""
     n = max(1, len(costs))
     total_cost = sum(costs)
-    n_correct = sum(1 for q in qualities if q >= 0.5)
+    if corrects is not None:
+        n_correct = sum(1 for c in corrects if c >= 0.5)
+    else:
+        n_correct = sum(1 for q in qualities if q >= 0.5)
     mean_quality = statistics.fmean(qualities) if qualities else 0.0
     mean_cost = total_cost / n
     return {
@@ -56,7 +62,9 @@ def cost_summary(
         "cost_per_correct_usd": (total_cost / n_correct) if n_correct else float("inf"),
         # quality per dollar: the efficiency frontier's y/x. Scaled to $1k of
         # spend so the number is human-readable across cheap/expensive systems.
-        "quality_per_1k_usd": (mean_quality / mean_cost / 1000.0)
+        # Quality points bought by $1,000 of query spend: (1000 / cost per
+        # query) questions, each worth mean_quality.
+        "quality_per_1k_usd": (mean_quality / mean_cost * 1000.0)
         if mean_cost > 0
         else float("inf"),
     }

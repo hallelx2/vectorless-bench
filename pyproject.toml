@@ -24,7 +24,7 @@ vector = ["google-genai>=1.30", "psycopg[binary]>=3.1", "pgvector>=0.3", "senten
 # the BM25 baseline
 bm25 = ["rank-bm25>=0.2.2"]
 # the system under test
-vectorless = ["vectorless-sdk>=0.1"]
+vectorless = ["vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@c7a1f42#subdirectory=python"]
 # public datasets (FinanceBench) + PDF extraction for the downloader
 data = ["datasets>=2.19", "pypdf>=4.0", "requests>=2.31"]
 # plots in the report
@@ -33,7 +33,7 @@ viz = ["matplotlib>=3.8"]
 all = [
   "google-genai>=1.30", "sentence-transformers>=3.0",
   "psycopg[binary]>=3.1", "pgvector>=0.3", "rank-bm25>=0.2.2",
-  "vectorless-sdk>=0.1", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31",
+  "vectorless-sdk @ git+https://github.com/hallelx2/vectorless-sdk.git@c7a1f42#subdirectory=python", "datasets>=2.19", "pypdf>=4.0", "requests>=2.31",
   "matplotlib>=3.8",
 ]
 dev = ["pytest>=8.0"]
@@ -47,3 +47,7 @@ packages = ["src/vectorless_bench"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.hatch.metadata]
+# vectorless-sdk is pinned to a git ref until a PyPI release carries Timing.
+allow-direct-references = true

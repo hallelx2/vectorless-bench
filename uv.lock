@@ -4529,22 +4529,18 @@ requires-dist = [
     { name = "requests", marker = "extra == 'data'", specifier = ">=2.31" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'vector'", specifier = ">=3.0" },
-    { name = "vectorless-sdk", marker = "extra == 'all'", specifier = ">=0.1" },
-    { name = "vectorless-sdk", marker = "extra == 'vectorless'", specifier = ">=0.1" },
+    { name = "vectorless-sdk", marker = "extra == 'all'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42" },
+    { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42" },
 ]
 provides-extras = ["llm", "vector", "bm25", "vectorless", "data", "viz", "all", "dev"]
 
 [[package]]
 name = "vectorless-sdk"
 version = "1.0.1"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42#c7a1f421411cce2c1d388d52305d511650c3205c" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0f/58/35e05e867842d159a5a01c208b8a3cb485a795ae1ea5704bddd5bfd64cc6/vectorless_sdk-1.0.1.tar.gz", hash = "sha256:994ec64ed67a7bca749c1c523c98f938a611ceb6bfa933a75102a9a31cda71ba", size = 16414, upload-time = "2026-04-23T12:32:09.19Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/b0/5ca4d4e6578ed573b4d13099d628a88444e13261af466f738314a9f460d1/vectorless_sdk-1.0.1-py3-none-any.whl", hash = "sha256:bc4175955d68bdf3536d3b00314ee2dc303493757ddaf845c0d7a42a9021d8a3", size = 22446, upload-time = "2026-04-23T12:32:07.683Z" },
 ]
 
 [[package]]

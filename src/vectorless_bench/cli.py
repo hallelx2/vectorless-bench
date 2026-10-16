@@ -42,6 +42,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.judge = True
     if args.warm:
         cfg.cold = False
+    if args.phase:
+        cfg.phase = args.phase
+    if args.concurrency is not None:
+        cfg.concurrency = args.concurrency
+    if args.max_spend is not None:
+        cfg.max_spend_usd = args.max_spend
+    if args.engine_probe:
+        cfg.rig = {**cfg.rig, "probes": {**(cfg.rig.get("probes") or {}), "engine": args.engine_probe}}
+    if args.no_rig:
+        cfg.rig = {**cfg.rig, "enabled": False}
 
     run_dir = run_suite(cfg)
     results = write_reports(run_dir, cfg.k)
@@ -65,7 +75,9 @@ def cmd_systems(_: argparse.Namespace) -> int:
     from .retrievers import available
 
     print("systems:", ", ".join(available()))
-    print("datasets: fixtures, financebench")
+    from .datasets import available as datasets_available
+
+    print("datasets:", ", ".join(datasets_available()))
     return 0
 
 
@@ -77,6 +89,14 @@ def _print_headline(results, k: int) -> None:
         print(f"{s:<14} {r['quality']['primary']:>8.3f} "
               f"{r['cost']['mean_cost_usd']:>10.6f} {r['latency_ms']['p50']:>8.1f} "
               f"{r['cost']['quality_per_1k_usd']:>10.1f} {r['n']:>4} {r['errors']:>4}")
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    from .hostprobe import serve
+
+    print(f"[vlbench] probe agent on {args.bind}:{args.port}", flush=True)
+    serve(args.port, args.bind)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", help="output dir (default: runs/)")
     r.add_argument("--judge", action="store_true", help="enable LLM-judge axis")
     r.add_argument("--warm", action="store_true", help="allow warm caches (not cold)")
+    r.add_argument("--phase", choices=["latency", "throughput"], help="latency (default) or throughput")
+    r.add_argument("--concurrency", type=int, help="questions in flight for --phase throughput")
+    r.add_argument("--max-spend", type=float, help="stop once recorded spend reaches this many USD")
+    r.add_argument("--engine-probe", help="engine VM probe agent URL, e.g. http://10.128.0.5:9101")
+    r.add_argument("--no-rig", action="store_true", help="skip host evidence (local smoke runs only)")
     r.set_defaults(func=cmd_run)
 
     rep = sub.add_parser("report", help="(re)build reports from a run dir")
@@ -103,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("systems", help="list available systems and datasets")
     s.set_defaults(func=cmd_systems)
+
+    pr = sub.add_parser("probe", help="host evidence agent (run on the engine VM)")
+    pr.add_argument("--port", type=int, default=9101)
+    pr.add_argument("--bind", default="0.0.0.0")
+    pr.set_defaults(func=cmd_probe)
     return p
 
 

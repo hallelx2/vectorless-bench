@@ -53,7 +53,15 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
         costs = [float(r["usage"].get("cost_usd", 0.0)) for r in ok]
         toks = [int(r["usage"].get("total_tokens", 0)) for r in ok]
         calls = [int(r["usage"].get("llm_calls", 0)) for r in ok]
-        latencies = [float(r["latency_ms"]) for r in rows if not r.get("error")]
+        # Latency from the latency phase only, and only from samples the rig
+        # did not flag: a sample measured on a busy machine is not a speed.
+        # First repeat only, like quality and cost: later repeats can run warm.
+        lat_rows = [r for r in first if not r.get("error") and r.get("phase", "latency") == "latency"]
+        latencies = [float(r["latency_ms"]) for r in lat_rows if not r.get("flagged")]
+        flagged = sum(1 for r in lat_rows if r.get("flagged"))
+        reruns = sum(max(0, int(r.get("attempts", 1)) - 1) for r in lat_rows)
+        load_rows = [r for r in rows if not r.get("error") and r.get("phase") == "throughput"]
+        engine_split = _engine_split([r for r in lat_rows if not r.get("flagged")])
 
         # determinism: group selected_ids by qid across repeats
         by_q: Dict[str, List[List[str]]] = defaultdict(list)
@@ -91,8 +99,16 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
             "abstention": {
                 "abstained": avg_metric("abstained"),
             },
-            "cost": aggregate.cost_summary(costs, qualities, toks, calls),
+            "cost": aggregate.cost_summary(costs, qualities, toks, calls, corrects=_corrects(ok, k)),
             "latency_ms": aggregate.percentiles(latencies),
+            "speed": {
+                "samples": len(latencies),
+                "flagged": flagged,
+                "reruns": reruns,
+                "under_load_ms": aggregate.percentiles([float(r["latency_ms"]) for r in load_rows]) if load_rows else None,
+                "throughput": (setup.get(system) or {}).get("throughput"),
+                "engine_split": engine_split,
+            },
             "determinism": {
                 "exact_match": _mean([d["exact_match"] for d in det]) if det else None,
                 "mean_jaccard": _mean([d["mean_jaccard"] for d in det]) if det else None,
@@ -101,6 +117,43 @@ def summarize(run_dir: Path, k: int) -> Dict[str, Any]:
             "by_domain": _by_domain(ok, k),
         }
     return results
+
+
+def _corrects(rows: List[Dict], k: int) -> List[float]:
+    """Per question: the graded answer when the run graded answers, else
+    whether the gold evidence was in the top k (hit@k)."""
+    out = []
+    for r in rows:
+        m = r["metrics"]
+        if "answer_correct" in m:
+            out.append(float(m["answer_correct"]))
+        elif "abstained" in m:
+            out.append(float(m["abstained"]))
+        else:
+            out.append(float(m.get(f"hit@{k}", 0.0)))
+    return out
+
+
+def _engine_split(rows: List[Dict]) -> Dict[str, Any]:
+    """Medians of the engine's own timing split over the given rows (systems
+    that report one: Vectorless). Empty when none do."""
+    t = [r["timing"] for r in rows if isinstance(r.get("timing"), dict)]
+    if not t:
+        return {}
+
+    def med(get) -> float:
+        vals = [float(get(x) or 0.0) for x in t]
+        return round(statistics.median(vals), 2)
+
+    return {
+        "n": len(t),
+        "total_ms": med(lambda x: x.get("total_ms")),
+        "engine_ms": med(lambda x: x.get("engine_ms")),
+        "judge_wait_ms": med(lambda x: (x.get("judge") or {}).get("wait_ms")),
+        "answer_model_wait_ms": med(lambda x: (x.get("answer_model") or {}).get("wait_ms")),
+        "db_wait_ms": med(lambda x: (x.get("db") or {}).get("wait_ms")),
+        "storage_wait_ms": med(lambda x: (x.get("storage") or {}).get("wait_ms")),
+    }
 
 
 def _by_domain(rows: List[Dict], k: int) -> Dict[str, Dict[str, float]]:
@@ -179,6 +232,7 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
             f"{_fmt(r['cost']['cost_per_correct_usd'], 5)} | {r['errors']} |"
         )
 
+    lines.extend(_speed_markdown(run_dir, results))
     lines.append("\n## Retrieval quality\n")
     lines.append(f"| System | P@{k} | R@{k} | F1@{k} | nDCG@{k} | MRR | hit@{k} |")
     lines.append("|---|---|---|---|---|---|---|")
@@ -238,6 +292,58 @@ def _write_markdown(run_dir: Path, results: Dict[str, Any], k: int) -> None:
                  "price book (see `manifest.json:pricing_fingerprint`)._\n")
 
     (run_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _speed_markdown(run_dir: Path, results: Dict[str, Any]) -> List[str]:
+    out = ["\n## Speed: how it was measured, and what it shows\n",
+           "Latency is the harness's wall clock around each system's retrieve call, the same "
+           "boundary for every system, one question at a time. Each sample carries host evidence "
+           "from every machine involved; a sample taken while the machine was busy (CPU steal or a "
+           "foreign process) is rerun, and the figures above use clean samples only.\n",
+           "| System | clean samples | flagged | reruns | under load p50 | q/min | concurrency |",
+           "|---|---|---|---|---|---|---|"]
+    for s, r in _sorted(results):
+        sp = r.get("speed") or {}
+        tp = sp.get("throughput") or {}
+        ul = sp.get("under_load_ms") or {}
+        out.append(f"| {s} | {sp.get('samples', '—')} | {sp.get('flagged', '—')} | {sp.get('reruns', '—')} | "
+                   f"{_fmt(ul.get('p50'), 1) if ul else '—'} | {_fmt(tp.get('questions_per_minute'), 1) if tp else '—'} | "
+                   f"{tp.get('concurrency', '—') if tp else '—'} |")
+    splits = [(s, (r.get("speed") or {}).get("engine_split")) for s, r in _sorted(results)]
+    splits = [(s, e) for s, e in splits if e]
+    if splits:
+        out += ["\nWhere a system reports its own split (median per question, ms):\n",
+                "| System | total | engine's own work | waiting on Jev | waiting on answer model | db | storage |",
+                "|---|---|---|---|---|---|---|"]
+        for s, e in splits:
+            out.append(f"| {s} | {e['total_ms']} | {e['engine_ms']} | {e['judge_wait_ms']} | "
+                       f"{e['answer_model_wait_ms']} | {e['db_wait_ms']} | {e['storage_wait_ms']} |")
+    try:
+        man = json.loads((run_dir / "manifest.json").read_text())
+        ex = man.get("extra") or {}
+        net = ex.get("network") or {}
+        if net:
+            out += ["\nNetwork distance to each provider (median of fresh connections, ms):\n",
+                    "| From | Target | TCP connect | TLS handshake |", "|---|---|---|---|"]
+            for host, rows in net.items():
+                for row in rows or []:
+                    out.append(f"| {host} | {row.get('target')} | {row.get('tcp_connect_ms', '—')} | "
+                               f"{row.get('tls_handshake_ms', '—')} |")
+        mach = ex.get("machines") or {}
+        if mach:
+            out.append("\nMachines: " + "; ".join(
+                f"{k}: {v.get('machine_type') or v.get('host') or '?'} ({v.get('cpu_count')} vCPU)"
+                for k, v in mach.items() if isinstance(v, dict)) + "\n")
+        ev = ex.get("engine_versions") or {}
+        if ev:
+            out.append("Engine build: " + "; ".join(f"{k}: {v.get('version') if isinstance(v, dict) else v}"
+                                                   for k, v in ev.items()) + "\n")
+        for w in man.get("warnings") or []:
+            if "unattributable" in w or "stopped" in w:
+                out.append(f"> **Warning:** {w}\n")
+    except Exception:
+        pass
+    return out
 
 
 def _sorted(results: Dict[str, Any]):
