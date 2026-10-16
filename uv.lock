@@ -4529,7 +4529,7 @@ requires-dist = [
     { name = "requests", marker = "extra == 'data'", specifier = ">=2.31" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'vector'", specifier = ">=3.0" },
-    { name = "vectorless-sdk", marker = "extra == 'all'", specifier = ">=0.1" },
+    { name = "vectorless-sdk", marker = "extra == 'all'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42" },
     { name = "vectorless-sdk", marker = "extra == 'vectorless'", git = "https://github.com/hallelx2/vectorless-sdk.git?subdirectory=python&rev=c7a1f42" },
 ]
 provides-extras = ["llm", "vector", "bm25", "vectorless", "data", "viz", "all", "dev"]
