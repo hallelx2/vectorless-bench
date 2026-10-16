@@ -120,8 +120,8 @@ def cmd_datasets(args: argparse.Namespace) -> int:
     params = _json.loads(args.params) if args.params else {}
     status = 0
     for name in names:
-        d = build_dataset(name, **params)
         try:
+            d = build_dataset(name, **params)
             if args.action == "fetch":
                 d.fetch()
             else:

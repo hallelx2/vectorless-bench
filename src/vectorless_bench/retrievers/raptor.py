@@ -52,7 +52,10 @@ class RaptorRetriever:
         self.setup_meta: Dict[str, object] = {}
         self._ras: Dict[str, object] = {}
         self._lock = threading.Lock()
-        self._query_usage: Optional[Usage] = None
+        # Which Usage an embedding is charged to: per thread, because RAPTOR
+        # embeds on the calling thread and the throughput phase runs several
+        # questions at once. Unset means setup.
+        self._target = threading.local()
 
     def _models(self):
         _ensure_repo()
@@ -76,7 +79,7 @@ class RaptorRetriever:
                                                         config=types.EmbedContentConfig(output_dimensionality=768))
                 toks = count_tokens(text)
                 with outer._lock:
-                    target = outer._query_usage or outer.setup_usage
+                    target = getattr(outer._target, "usage", None) or outer.setup_usage
                     target.embedding_tokens += toks
                     target.cost_usd += compute_embedding(outer.embedding_model, toks)
                 return list(r.embeddings[0].values)
@@ -117,16 +120,14 @@ class RaptorRetriever:
                                    error="document not built", cold=cold)
         usage = Usage()
         t0 = time.perf_counter()
-        with self._lock:
-            self._query_usage = usage
+        self._target.usage = usage
         try:
             _, layers = ra.retrieve(question.question, top_k=k, collapse_tree=True, return_layer_information=True)
         except Exception as e:  # pragma: no cover - network
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
                                    error=str(e)[:500], cold=cold)
         finally:
-            with self._lock:
-                self._query_usage = None
+            self._target.usage = None
         nodes = ra.tree.all_nodes
         sections = []
         for info in layers[:k]:

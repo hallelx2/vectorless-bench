@@ -259,3 +259,73 @@ def test_pageindex_reports_corpus_questions_as_not_applicable():
     r._doc_ids = {}
     res = r.retrieve(Question(qid="q", doc_id=CORPUS, question="?"), k=5)
     assert res.error.startswith("n/a:")
+
+
+def test_llm_retries_by_status_code_not_by_digits_in_the_text():
+    from vectorless_bench._llm import _busy
+
+    class E(Exception):
+        def __init__(self, code, msg):
+            super().__init__(msg)
+            self.code = code
+
+    assert _busy(E(429, "Resource exhausted"))
+    assert _busy(E(503, "unavailable"))
+    assert not _busy(E(400, "prompt has 4290 tokens; request 503-abc"))
+    assert _busy(Exception("RESOURCE_EXHAUSTED"))  # no code: the text is the fallback
+
+
+def test_jev_rejects_a_missing_or_unoffered_verdict(monkeypatch):
+    import io, json as _j
+    import pytest
+    from vectorless_bench import jev as jevmod
+
+    def reply(body):
+        class _R(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return lambda req, timeout=0: _R(_j.dumps(body).encode())
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    q = {"verdict": ("grade it", [("correct", "c"), ("incorrect", "i")])}
+    j = jevmod.Jev()
+    monkeypatch.setattr(jevmod.urllib.request, "urlopen", reply({"answers": {}}))
+    with pytest.raises(RuntimeError, match="no answer"):
+        j.choose({}, q)
+    monkeypatch.setattr(jevmod.urllib.request, "urlopen", reply({"answers": {"verdict": {"choice": "maybe"}}}))
+    with pytest.raises(RuntimeError, match="not one of the offered"):
+        j.choose({}, q)
+
+
+def test_full_context_charges_a_cache_to_its_expiry_and_charges_a_replaced_one(monkeypatch):
+    import time as _t
+    from vectorless_bench.retrievers import full_context as fc
+
+    monkeypatch.setattr(fc, "genai_client", lambda: type("C", (), {"caches": type("K", (), {"delete": staticmethod(lambda name: None)})()})())
+    r = fc.FullContextRetriever.__new__(fc.FullContextRetriever)
+    import threading
+    r.model, r.setup_usage, r._cache_lock, r._caches = "gemini-3.5-flash-lite", Usage(), threading.Lock(), {}
+    now = _t.time()
+    # created 3 h ago, expired after 1 h: billed 1 h, not 3
+    r._retire({"name": "c", "created": now - 3 * 3600, "expires": now - 2 * 3600, "tokens": 1_000_000})
+    rate = fc._STORAGE_PER_MTOK_HOUR["default"]
+    assert abs(r.setup_usage.cost_usd - rate) < 1e-9
+
+
+def test_raptor_charges_concurrent_queries_to_their_own_usage():
+    import threading
+    from vectorless_bench.retrievers.raptor import RaptorRetriever
+
+    r = RaptorRetriever.__new__(RaptorRetriever)
+    r._target, r.setup_usage = threading.local(), Usage()
+    a, b = Usage(), Usage()
+    seen = {}
+
+    def query(u, name):
+        r._target.usage = u
+        seen[name] = getattr(r._target, "usage", None) is u
+
+    ta, tb = threading.Thread(target=query, args=(a, "a")), threading.Thread(target=query, args=(b, "b"))
+    ta.start(); tb.start(); ta.join(); tb.join()
+    assert seen == {"a": True, "b": True}
+    assert getattr(r._target, "usage", None) is None  # the main thread is charged to setup

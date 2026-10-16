@@ -312,8 +312,14 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         m.update(native.retrieval(q, result.sections, cfg.k))
     # Judge only on the first repeat: answer quality doesn't need rerunning, and
     # it keeps judge spend from scaling with the determinism repeat count.
+    jr = None
     if judge is not None and not result.error and repeat == 0:
-        jr = judge.evaluate(q, result.sections)
+        try:
+            jr = judge.evaluate(q, result.sections)
+        except Exception as e:  # a malformed grade is recorded, and the run goes on
+            m["grading_failed"] = 1.0
+            result.trace = dict(result.trace or {}, grading_error=str(e)[:300])
+    if jr is not None:
         m["answer_correct"] = jr.correct
         m["answer_faithful"] = jr.faithful
         m["answered"] = jr.answered

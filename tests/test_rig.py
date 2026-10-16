@@ -151,3 +151,24 @@ def test_throughput_spend_cap_stops_new_calls(tmp_path):
     assert 1 <= len(rows) <= 2, "at most `concurrency` calls run once the cap is hit"
     man = json.loads((run_dir / "manifest.json").read_text())
     assert man["extra"]["stopped"]
+
+
+def test_a_failed_grading_is_recorded_and_the_run_goes_on():
+    from vectorless_bench import runner
+    from vectorless_bench.config import RunConfig
+    from vectorless_bench.schema import GoldAnchor, Question, RetrievalResult, RetrievedSection
+
+    class _Ret:
+        name = "x"
+
+        def retrieve(self, q, k, cold=True):
+            return RetrievalResult(qid=q.qid, system="x", query=q.question, sections=[RetrievedSection(content="a")])
+
+    class _Judge:
+        def evaluate(self, q, sections):
+            raise RuntimeError("jev: no answer for 'verdict'")
+
+    q = Question(qid="q", doc_id="d", question="?", gold=[GoldAnchor(doc_id="d", answer_spans=["a"])], answer="a")
+    rec = runner._eval_one("x", q, _Ret(), RunConfig(dataset="fixtures"), _Judge(), 0, None)
+    assert rec.error is None and rec.metrics["grading_failed"] == 1.0
+    assert "no answer" in rec.trace["grading_error"]

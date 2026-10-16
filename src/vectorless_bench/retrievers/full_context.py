@@ -24,6 +24,7 @@ Run fairly (HAL-3046):
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -72,6 +73,7 @@ class FullContextRetriever:
         self._docs: Dict[str, Doc] = {}
         self._tokens: Dict[str, int] = {}
         self._caches: Dict[str, Dict[str, object]] = {}
+        self._cache_lock = threading.Lock()
 
     def setup(self, corpus: List[Doc]) -> None:
         self._docs = {d.doc_id: d for d in corpus}
@@ -103,21 +105,37 @@ class FullContextRetriever:
         created = genai_client().caches.create(model=self.model, config=types.CreateCachedContentConfig(
             contents=[types.Content(role="user", parts=[self._doc_part(doc)])],
             system_instruction=_SYSTEM, ttl=f"{self.ttl}s", display_name=f"vlbench-{doc.doc_id[:40]}"))
-        self._caches[doc.doc_id] = {"name": created.name, "created": time.time(),
-                                    "expires": time.time() + self.ttl, "tokens": self._doc_tokens(doc)}
+        entry = {"name": created.name, "created": time.time(), "expires": time.time() + self.ttl,
+                 "tokens": self._doc_tokens(doc)}
+        with self._cache_lock:
+            old = self._caches.get(doc.doc_id)
+            self._caches[doc.doc_id] = entry
+        if old is not None:
+            # A cache replaced near expiry, or created twice by two questions
+            # that missed at once, is charged and deleted, never forgotten.
+            self._retire(old)
         return created.name
+
+    def _retire(self, c: Dict[str, object]) -> None:
+        """Charge a cache's storage for the time it existed (to expiry at most)
+        and delete it."""
+        rate = _STORAGE_PER_MTOK_HOUR["pro" if "pro" in self.model else "default"]
+        end = min(time.time(), float(c["expires"]))
+        hours = max(0.0, end - float(c["created"])) / 3600.0
+        with self._cache_lock:
+            self.setup_usage.cost_usd += int(c["tokens"]) * hours * rate / 1_000_000.0
+        try:
+            genai_client().caches.delete(name=str(c["name"]))
+        except Exception:
+            pass
 
     def teardown(self) -> None:
         """Delete the caches and charge their storage to setup cost."""
-        rate = _STORAGE_PER_MTOK_HOUR["pro" if "pro" in self.model else "default"]
-        for c in self._caches.values():
-            hours = max(0.0, (time.time() - float(c["created"]))) / 3600.0
-            self.setup_usage.cost_usd += int(c["tokens"]) * hours * rate / 1_000_000.0
-            try:
-                genai_client().caches.delete(name=str(c["name"]))
-            except Exception:
-                pass
-        self._caches.clear()
+        with self._cache_lock:
+            caches = list(self._caches.values())
+            self._caches.clear()
+        for c in caches:
+            self._retire(c)
 
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
         from google.genai import types  # type: ignore
