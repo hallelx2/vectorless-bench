@@ -203,6 +203,7 @@ class VectorRagRetriever:
         # re-run of the bench does not repeat a CPU-hours ingest. The
         # first, uncached pass is the one whose setup_seconds is reported.
         self._chunk_doc = {c.chunk_id: c.doc_id for c in self._chunks}
+        self._chunk_text = {c.chunk_id: c.text for c in self._chunks}
         self._chunk_start = {c.chunk_id: c.start for c in self._chunks}
         vectors = self._cached_embed(self._chunks)
 
@@ -251,7 +252,11 @@ class VectorRagRetriever:
             # vector type in psycopg's registry, which register_vector does not add
             with cur.copy(f"COPY {self._table} (doc_id, chunk_id, text, embedding) FROM STDIN") as cp:
                 for ch, vec in zip(self._chunks, vectors):
-                    cp.write_row((ch.doc_id, ch.chunk_id, ch.text, "[" + ",".join(f"{x:.7g}" for x in vec) + "]"))
+                    # Postgres text cannot hold NUL, and PDF extraction leaves
+                    # some (FinanceBench, measured in the pilot). Stored without
+                    # them; a query returns the chunk's own text by id.
+                    cp.write_row((_no_nul(ch.doc_id), ch.chunk_id, _no_nul(ch.text),
+                                  "[" + ",".join(f"{x:.7g}" for x in vec) + "]"))
             # exact search: a per-document filter leaves a few hundred rows,
             # and an approximate index would cost the baseline recall it
             # would not have in a tuned deployment of this size
@@ -282,7 +287,8 @@ class VectorRagRetriever:
             cost_usd=compute_embedding(self.embedding_model, q_tokens),
         )
         sections = [
-            RetrievedSection(content=text, section_id=cid, score=score, doc_id=self._chunk_doc.get(cid, ""),
+            RetrievedSection(content=self._chunk_text.get(cid, text), section_id=cid, score=score,
+                             doc_id=self._chunk_doc.get(cid, ""),
                              char_start=self._chunk_start.get(cid))
             for (cid, text, score) in rows
         ]
@@ -343,3 +349,7 @@ class VectorRagRetriever:
         scores = self._matrix[idx] @ q
         top = idx[np.argsort(-scores)[:k]]
         return [(self._chunks[i].chunk_id, self._chunks[i].text, float(self._matrix[i] @ q)) for i in top]
+
+
+def _no_nul(s: str) -> str:
+    return s.replace("\x00", "")
