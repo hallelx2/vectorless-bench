@@ -16,7 +16,7 @@
 #
 #   deploy/gcp/rig.sh data-push              # on the bench VM: datasets + embedding cache -> GCS
 #   deploy/gcp/rig.sh worker-up NAME         # create a worker (WORKER_MACHINE, default e2-standard-2)
-#   deploy/gcp/rig.sh worker-run NAME DATASET [CONFIG]   # pull that dataset, run its accuracy pass, upload
+#   deploy/gcp/rig.sh worker-run NAME "D1 D2"   # pull each dataset, run its accuracy pass, upload
 #   deploy/gcp/rig.sh worker-down NAME
 #
 # Knobs (env): PROJECT ZONE MACHINE ENGINE_REF BENCH_REF BUCKET MODEL THINKING_BUDGET
@@ -147,29 +147,36 @@ case $cmd in
     on "$NAME" "curl -sf http://$IP:8080/v1/version && echo"
     ;;
   worker-run)
-    NAME=${2:?usage: rig.sh worker-run NAME DATASET [CONFIG]}
-    DATASET=${3:?usage: rig.sh worker-run NAME DATASET [CONFIG]}
-    CONFIG=${4:-configs/pilot/$DATASET.yaml}
-    RUN_NAME="acc-$DATASET-$(date +%Y%m%d-%H%M%S)"
+    NAME=${2:?usage: rig.sh worker-run NAME "DATASET [DATASET ...]"}
+    DATASETS=${3:?usage: rig.sh worker-run NAME "DATASET [DATASET ...]"}
+    STAMP=$(date +%Y%m%d-%H%M%S)
+    JOB="acc-$NAME-$STAMP"
     # The run script goes over ssh's stdin (no nested quoting), then runs
-    # detached so it outlives this session; its log and results go to GCS.
-    g compute ssh "$NAME" --zone="$ZONE" --command="sudo tee /root/$RUN_NAME.sh >/dev/null" <<EOS
+    # detached so it outlives this session. The worker runs its datasets in
+    # turn; each result directory and the log go to GCS as soon as it ends.
+    g compute ssh "$NAME" --zone="$ZONE" --command="sudo tee /root/$JOB.sh >/dev/null" <<EOS
 set -uo pipefail
 set -a; . /etc/vlbench.env; set +a
 cd /opt/vectorless-bench
 git fetch -q origin && git checkout -q $BENCH_REF && git pull -q --ff-only || true
-mkdir -p data/$DATASET data/cache
-gcloud storage rsync -r --quiet $BUCKET/data/$DATASET data/$DATASET
-gcloud storage rsync -r --quiet $BUCKET/data/cache data/cache
 HOME=/root /usr/local/bin/uv sync -q --extra all
-HOME=/root /usr/local/bin/uv run --no-sync vlbench run --config $CONFIG --phase accuracy --out /results/$RUN_NAME
-rc=\$?
-gcloud storage cp -r /results/$RUN_NAME $BUCKET/runs/
-echo "exit=\$rc"
-gcloud storage cp /root/$RUN_NAME.log $BUCKET/runs/$RUN_NAME.log
+mkdir -p data/cache
+gcloud storage rsync -r --quiet $BUCKET/data/cache data/cache
+failed=""
+for d in $DATASETS; do
+  echo "=== \$(date -u +%FT%TZ) \$d"
+  mkdir -p data/\$d
+  gcloud storage rsync -r --quiet $BUCKET/data/\$d data/\$d
+  out=/results/acc-\$d-$STAMP
+  HOME=/root /usr/local/bin/uv run --no-sync vlbench run --config configs/pilot/\$d.yaml --phase accuracy --out \$out || failed="\$failed \$d"
+  gcloud storage cp -r \$out $BUCKET/runs/
+  gcloud storage cp /root/$JOB.log $BUCKET/runs/$JOB.log
+done
+echo "=== \$(date -u +%FT%TZ) worker done; failed:\${failed:- none}"
+gcloud storage cp /root/$JOB.log $BUCKET/runs/$JOB.log
 EOS
-    on "$NAME" "sudo bash -c 'setsid nohup bash /root/$RUN_NAME.sh > /root/$RUN_NAME.log 2>&1 < /dev/null &'; echo started"
-    echo "started $RUN_NAME on $NAME; results -> $BUCKET/runs/$RUN_NAME/"
+    on "$NAME" "sudo bash -c 'setsid nohup bash /root/$JOB.sh > /root/$JOB.log 2>&1 < /dev/null &'; echo started"
+    echo "started $JOB on $NAME ($DATASETS); results -> $BUCKET/runs/acc-<dataset>-$STAMP/"
     ;;
   worker-down)
     NAME=${2:?usage: rig.sh worker-down NAME}
