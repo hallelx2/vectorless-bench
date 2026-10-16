@@ -154,6 +154,12 @@ class RetrievalResult:
     cold: bool = True  # whether caches were bypassed for this call
     trace: Dict[str, Any] = field(default_factory=dict)  # audit/repro detail
     error: Optional[str] = None  # set if retrieval failed; record still emitted
+    # What the answer step should read instead of the sections, when the
+    # system's own answer would have read more: full context's model read the
+    # whole document, so its graded answer is written from the whole document
+    # (text or the PDF itself), not from the passages it quoted. Model input
+    # parts (google.genai types.Part); never written to a record.
+    answer_parts: Optional[List[Any]] = field(default=None, repr=False, compare=False)
 
 
 @dataclass

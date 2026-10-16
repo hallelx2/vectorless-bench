@@ -321,7 +321,7 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
     jr = None
     if judge is not None and not result.error and repeat == 0:
         try:
-            jr = judge.evaluate(q, result.sections)
+            jr = judge.evaluate(q, result.sections, answer_parts=getattr(result, "answer_parts", None))
         except Exception as e:  # a malformed grade is recorded, and the run goes on
             m["grading_failed"] = 1.0
             result.trace = dict(result.trace or {}, grading_error=str(e)[:300])
@@ -339,6 +339,9 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
             m["grade_repeat_agree"] = 1.0 if jr.verdict_repeat == jr.verdict else 0.0
         if native is not None:
             m.update(native.answer(q, jr.candidate))
+        # the answer itself, so any grade can be read and checked
+        result.trace = dict(result.trace or {}, answer=(jr.candidate or "")[:2000], verdict=jr.verdict,
+                            answered_from="system context" if getattr(result, "answer_parts", None) else "returned units")
     return RunRecord(
         latency_ms=wall_ms, wall_ms=wall_ms, reported_ms=result.latency_ms,
         usage=usage_to_dict(result.usage), metrics=m,
