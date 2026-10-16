@@ -24,6 +24,7 @@ Vectorless's included.
 from __future__ import annotations
 
 import json
+import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -66,16 +67,33 @@ class LegalBenchRagDataset(Dataset):
             for s in self.subsets:
                 p = self.dir / "benchmarks" / f"{s}.json"
                 tests = json.loads(p.read_text(encoding="utf-8"))["tests"]
+                # The benchmark JSON spells some paths in decomposed Unicode
+                # (NFD: "E" + combining accent) while the extracted corpus file
+                # is composed (NFC). Byte for byte they differ, and the document
+                # went missing (measured 2026-10-16: 713 of 714 present, the
+                # absent one "LECLANCHÉ S.A. - ..."). Every path is NFC here.
+                for t in tests:
+                    for sn in t["snippets"]:
+                        sn["file_path"] = unicodedata.normalize("NFC", sn["file_path"])
                 self._tests[s] = tests[:194] if self.mini else tests
         return self._tests
 
     def _files_needed(self) -> List[str]:
         return sorted({sn["file_path"] for tests in self._load().values() for t in tests for sn in t["snippets"]})
 
+    def _path(self, fp: str) -> Path:
+        """The corpus file for a path, in whichever Unicode form the
+        filesystem stored it (macOS keeps NFD, Linux keeps what it was given)."""
+        for form in ("NFC", "NFD"):
+            p = self.dir / "corpus" / unicodedata.normalize(form, fp)
+            if p.exists():
+                return p
+        return self.dir / "corpus" / fp
+
     def corpus(self) -> List[Doc]:
         docs = []
         for fp in self._files_needed():
-            p = self.dir / "corpus" / fp
+            p = self._path(fp)
             if p.exists():
                 docs.append(Doc(doc_id=fp, title=Path(fp).stem, content=p.read_text(encoding="utf-8", errors="ignore"),
                                 path=str(p), content_type="text/plain"))
@@ -91,7 +109,7 @@ class LegalBenchRagDataset(Dataset):
                 gold = []
                 for x in sn:
                     if x["file_path"] not in texts:
-                        p = self.dir / "corpus" / x["file_path"]
+                        p = self._path(x["file_path"])
                         texts[x["file_path"]] = p.read_text(encoding="utf-8", errors="ignore") if p.exists() else ""
                     a, b = x["span"]
                     span = texts[x["file_path"]][a:b].strip()

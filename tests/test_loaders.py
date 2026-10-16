@@ -179,3 +179,27 @@ def test_a_question_keeps_every_file_its_gold_spans(monkeypatch):
     monkeypatch.setattr(runner, "build_dataset", lambda *a, **k: _DS())
     _, corpus, _ = runner._load_dataset(RunConfig(dataset="legalbench_rag", limit=1))
     assert sorted(d.doc_id for d in corpus) == ["f0.txt", "f3.txt"]
+
+
+
+def test_legalbench_paths_match_whatever_unicode_form_the_files_use(tmp_path):
+    import json as _j
+    import unicodedata
+
+    from vectorless_bench.datasets.base import build_dataset
+
+    d = tmp_path / "lbr"
+    nfd = unicodedata.normalize("NFD", "cuad/LECLANCHÉ S.A. - AGREEMENT.txt")
+    nfc = unicodedata.normalize("NFC", nfd)
+    (d / "benchmarks").mkdir(parents=True)
+    (d / "corpus" / "cuad").mkdir(parents=True)
+    (d / "corpus" / nfc).write_text("The parties agree to joint development.", encoding="utf-8")
+    test = {"query": "What do the parties agree to?",
+            "snippets": [{"file_path": nfd, "span": [21, 38], "answer": "joint development"}]}
+    for s in ("contractnli", "cuad", "maud", "privacy_qa"):
+        (d / "benchmarks" / f"{s}.json").write_text(_j.dumps({"tests": [test] if s == "cuad" else []}))
+    ds = build_dataset("legalbench_rag", data_dir=str(d))
+    docs = ds.corpus()
+    assert [x.doc_id for x in docs] == [nfc], "the NFD path in the JSON finds the NFC file"
+    q = ds.questions()[0]
+    assert q.doc_id == nfc and q.gold and "joint development" in q.gold[0].answer_spans[0]
