@@ -88,8 +88,10 @@ def setup_of(manifest: Dict[str, Any]) -> str:
         cfg = _get(manifest, "extra", "config") or {}
         s = {"model": manifest.get("model") or cfg.get("model"),
              "gen_model": cfg.get("gen_model") if cfg.get("judge") else None,
-             "answer_prompt": "v1" if cfg.get("judge") else None}
-    return f"{s.get('model')} | answers {s.get('gen_model') or '—'} | prompt {s.get('answer_prompt') or '—'}"
+             "answer_prompt": "v1" if cfg.get("judge") else None,
+             "judge_model": (manifest.get("judge_model") or cfg.get("judge_model")) if cfg.get("judge") else None}
+    return (f"{s.get('model')} | answers {s.get('gen_model') or '—'} | prompt {s.get('answer_prompt') or '—'}"
+            f" | graded {s.get('judge_model') or '—'}")
 
 
 def collect(run_dirs: Iterable[Path], allow_mixed: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -120,7 +122,8 @@ def collect(run_dirs: Iterable[Path], allow_mixed: bool = False) -> Dict[str, Di
             if (res.get("speed") or {}).get("samples"):
                 # speed: only runs timed on the isolated rig carry latency samples
                 # (an accuracy pass records none)
-                cell["timing"] = {"latency_ms": res.get("latency_ms"), "speed": res.get("speed"), "run": e["dir"]}
+                cell["timing"] = {"latency_ms": res.get("latency_ms"), "speed": res.get("speed"), "run": e["dir"],
+                                  "setup": setup_of(e["manifest"])}
     return board
 
 
@@ -144,6 +147,10 @@ def _num(x: Any) -> Optional[float]:
 
 def row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
     r = cell.get("result") or {}
+    # speed only beside quality measured the same way: with --allow-mixed a
+    # 3.5 latency run must not be shown as a 2.5 accuracy run's latency
+    if cell.get("timing") and cell["timing"].get("setup") != cell.get("setup"):
+        cell = {k: v for k, v in cell.items() if k != "timing"}
     k = cell.get("k", 5)
     native_key, native_label = _NATIVE_HEADLINE.get(dataset, (None, None))
     native = None

@@ -21,6 +21,10 @@ def _split(csv: Optional[str]) -> Optional[List[str]]:
     return [s.strip() for s in csv.split(",") if s.strip()] if csv else None
 
 
+# Per-system settings that name a generative model, overridden by --answer-model.
+_MODEL_KEYS = ("model", "retrieve_model", "gen_model", "answer_model")
+
+
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     """The run's config: the file, then the CLI flags over it."""
     cfg = load_config(args.config) if args.config else RunConfig()
@@ -41,6 +45,13 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         # the run's shared model: what every system navigates and indexes
         # with, and what the shared answer step writes with
         cfg.model = cfg.gen_model = args.answer_model
+        # a system's own model setting would otherwise win over the flag
+        # (params_for applies system_params last) while the manifest named
+        # the flag's model as the run's
+        for params in cfg.system_params.values():
+            for key in _MODEL_KEYS:
+                if key in params:
+                    params[key] = args.answer_model
     if args.out:
         cfg.out_dir = args.out
     if args.judge:
