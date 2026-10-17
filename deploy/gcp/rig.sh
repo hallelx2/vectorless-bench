@@ -20,6 +20,7 @@
 #   deploy/gcp/rig.sh worker-down NAME
 #
 # Knobs (env): PROJECT ZONE MACHINE ENGINE_REF BENCH_REF BUCKET MODEL THINKING_BUDGET
+#   ANSWER_MODEL (worker-run: the shared model every system and the answer step use)
 # Prereqs: gcloud logged in; the vlbench-runner service account (Vertex user,
 # bucket writer, secret accessor); secrets vlbench-typesafe-api-key (the Jev
 # key) and vlbench-engine-api-key (created by `up` if missing).
@@ -167,8 +168,8 @@ for d in $DATASETS; do
   echo "=== \$(date -u +%FT%TZ) \$d"
   mkdir -p data/\$d
   gcloud storage rsync -r --quiet $BUCKET/data/\$d data/\$d
-  out=/results/acc-\$d-$STAMP
-  HOME=/root /usr/local/bin/uv run --no-sync vlbench run --config configs/pilot/\$d.yaml --phase accuracy --out \$out || failed="\$failed \$d"
+  out=/results/acc-\$d${ANSWER_MODEL:+-$ANSWER_MODEL}-$STAMP
+  HOME=/root /usr/local/bin/uv run --no-sync vlbench run --config configs/pilot/\$d.yaml --phase accuracy --out \$out ${ANSWER_MODEL:+--answer-model $ANSWER_MODEL} || failed="\$failed \$d"
   gcloud storage cp -r \$out $BUCKET/runs/
   gcloud storage cp /root/$JOB.log $BUCKET/runs/$JOB.log
 done

@@ -21,7 +21,8 @@ def _split(csv: Optional[str]) -> Optional[List[str]]:
     return [s.strip() for s in csv.split(",") if s.strip()] if csv else None
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def config_from_args(args: argparse.Namespace) -> RunConfig:
+    """The run's config: the file, then the CLI flags over it."""
     cfg = load_config(args.config) if args.config else RunConfig()
     # CLI flags override the config file
     if args.dataset:
@@ -36,6 +37,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.limit = args.limit
     if args.model:
         cfg.model = args.model
+    if args.answer_model:
+        # the run's shared model: what every system navigates and indexes
+        # with, and what the shared answer step writes with
+        cfg.model = cfg.gen_model = args.answer_model
     if args.out:
         cfg.out_dir = args.out
     if args.judge:
@@ -52,7 +57,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.rig = {**cfg.rig, "probes": {**(cfg.rig.get("probes") or {}), "engine": args.engine_probe}}
     if args.no_rig:
         cfg.rig = {**cfg.rig, "enabled": False}
+    return cfg
 
+
+def cmd_run(args: argparse.Namespace) -> int:
+    cfg = config_from_args(args)
     run_dir = run_suite(cfg)
     results = write_reports(run_dir, cfg.k)
     print(f"\n[vlbench] report: {run_dir / 'report.md'}")
@@ -82,7 +91,13 @@ def cmd_scoreboard(args: argparse.Namespace) -> int:
             dirs.append(path)
         else:  # a parent of run directories
             dirs.extend(sorted(d for d in path.glob("**/") if (d / "records.jsonl").exists()))
-    info = build(dirs, Path(args.out))
+    from .scoreboard import MixedAnswerSetups
+
+    try:
+        info = build(dirs, Path(args.out), allow_mixed=args.allow_mixed)
+    except MixedAnswerSetups as e:
+        print(f"[vlbench] scoreboard refused: {e}", file=sys.stderr)
+        return 2
     print(f"[vlbench] scoreboard: {info['rows']} rows over {info['datasets']} datasets -> {info['out']}")
     return 0
 
@@ -185,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--repeats", type=int, help="reruns per question (determinism)")
     r.add_argument("--limit", type=int, help="sample N questions (stratified)")
     r.add_argument("--model", help="retrieval model")
+    r.add_argument("--answer-model", help="the run's shared model: sets both the systems' model and the answer step's")
     r.add_argument("--out", help="output dir (default: runs/)")
     r.add_argument("--judge", action="store_true", help="enable LLM-judge axis")
     r.add_argument("--warm", action="store_true", help="allow warm caches (not cold)")
@@ -205,6 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     sb = sub.add_parser("scoreboard", help="fold run directories into the published scoreboard")
     sb.add_argument("runs", nargs="+", help="run directories, or directories that contain them")
     sb.add_argument("--out", default="scoreboard", help="output directory")
+    sb.add_argument("--allow-mixed", action="store_true",
+                    help="fold runs answered under different models or prompts into one board (each row names its setup)")
     sb.set_defaults(func=cmd_scoreboard)
 
     s = sub.add_parser("systems", help="list available systems and datasets")

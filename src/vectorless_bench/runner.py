@@ -203,6 +203,7 @@ def run(cfg: RunConfig, progress: bool = True) -> Path:
         extra={
             "config": asdict(cfg),
             "phase": cfg.phase,
+            "answer_setup": answer_setup(cfg),
             "concurrency": cfg.concurrency,
             "thinking_budget": _safe(_llm.thinking_budget),
             "vertex": {"project": _safe(_llm.project), "location": _safe(_llm.location)},
@@ -356,6 +357,16 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         timing=result.trace.get("timing") if isinstance(result.trace, dict) else None,
         **base,
     )
+
+
+def answer_setup(cfg: RunConfig) -> Dict[str, Any]:
+    """What the run's answers depend on besides retrieval. The scoreboard
+    never puts two of these side by side (HAL-3214)."""
+    from .judge import ANSWER_PROMPT
+
+    return {"model": cfg.model, "gen_model": cfg.gen_model if cfg.judge else None,
+            "answer_prompt": ANSWER_PROMPT if cfg.judge else None,
+            "judge_model": cfg.judge_model if cfg.judge else None}
 
 
 def _new_run_dir(root: Path) -> Path:

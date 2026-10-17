@@ -7,14 +7,20 @@
 set -uo pipefail
 set -a; . /etc/vlbench.env; set +a
 ORDER=${PILOT_ORDER:-"financebench manuals qasper cuad legalbench_rag mmlongbench_doc multihop_rag"}
+# ANSWER_MODEL runs the pilot on another shared model (HAL-3214); its runs go
+# to their own directory, so one scoreboard never mixes two models.
+ANSWER_MODEL=${ANSWER_MODEL:-}
+OUT=${PILOT_OUT:-runs/pilot${ANSWER_MODEL:+-$ANSWER_MODEL}}
+SYSTEMS=${PILOT_SYSTEMS:-}
 failed=()
 for d in $ORDER; do
   echo "=== $(date -u +%FT%TZ) $d"
-  if ! uv run --no-sync vlbench run --config "configs/pilot/$d.yaml"; then
+  if ! uv run --no-sync vlbench run --config "configs/pilot/$d.yaml" --out "$OUT" \
+      ${ANSWER_MODEL:+--answer-model "$ANSWER_MODEL"} ${SYSTEMS:+--systems "$SYSTEMS"}; then
     echo "!!! $d: run failed"
     failed+=("$d:run")
   fi
-  if ! uv run --no-sync vlbench scoreboard runs/pilot --out runs/pilot/scoreboard; then
+  if ! uv run --no-sync vlbench scoreboard "$OUT" --out "$OUT/scoreboard"; then
     echo "!!! $d: scoreboard failed"
     failed+=("$d:scoreboard")
   fi

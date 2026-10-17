@@ -75,9 +75,34 @@ def _phase(entry: Dict[str, Any], system: str) -> str:
     return "latency"
 
 
-def collect(run_dirs: Iterable[Path]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """board[dataset][system] = {"result", "k", "run", "created_at", "manifest", "throughput"}"""
+class MixedAnswerSetups(ValueError):
+    """The runs were answered under different models or answer prompts."""
+
+
+def setup_of(manifest: Dict[str, Any]) -> str:
+    """One run's answer setup as a label: model, answer model, prompt. Runs
+    written before the manifest recorded it (bench < #24) are read from
+    their config and marked prompt v1."""
+    s = _get(manifest, "extra", "answer_setup")
+    if not s:
+        cfg = _get(manifest, "extra", "config") or {}
+        s = {"model": manifest.get("model") or cfg.get("model"),
+             "gen_model": cfg.get("gen_model") if cfg.get("judge") else None,
+             "answer_prompt": "v1" if cfg.get("judge") else None}
+    return f"{s.get('model')} | answers {s.get('gen_model') or '—'} | prompt {s.get('answer_prompt') or '—'}"
+
+
+def collect(run_dirs: Iterable[Path], allow_mixed: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """board[dataset][system] = {"result", "k", "run", "created_at", "manifest", "throughput"}
+
+    Refuses (MixedAnswerSetups) runs answered under different models or
+    answer prompts: a later run would silently replace an earlier one's
+    cells and the board would compare answers written two ways."""
     runs = [e for e in (_load(Path(d)) for d in run_dirs) if e]
+    setups = sorted({setup_of(e["manifest"]) for e in runs})
+    if len(setups) > 1 and not allow_mixed:
+        raise MixedAnswerSetups("runs were answered under different setups: " + "; ".join(setups)
+                                + ". Build one scoreboard per setup.")
     runs.sort(key=lambda e: e["manifest"].get("created_at") or "")
     board: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for e in runs:  # oldest first, so a later run replaces an earlier one
@@ -91,7 +116,7 @@ def collect(run_dirs: Iterable[Path]) -> Dict[str, Dict[str, Dict[str, Any]]]:
             if (res.get("n") or 0) > 0:
                 # quality, cost and answers: the latest run that answered questions
                 cell.update(result=res, k=e["k"], run=e["dir"], created_at=e["manifest"].get("created_at"),
-                            manifest=e["manifest"])
+                            manifest=e["manifest"], setup=setup_of(e["manifest"]))
             if (res.get("speed") or {}).get("samples"):
                 # speed: only runs timed on the isolated rig carry latency samples
                 # (an accuracy pass records none)
@@ -157,6 +182,7 @@ def row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
         "questions_per_minute": _num(tp.get("questions_per_minute")) if isinstance(tp, dict) else None,
         "ingest_seconds": _num(_get(r, "ingest", "setup_seconds")),
         "run": cell.get("run"),
+        "setup": cell.get("setup"),
     }
 
 
@@ -180,8 +206,8 @@ def _ms(x: Optional[float]) -> str:
     return f"{x / 1000:.1f} s" if x >= 1000 else f"{x:.0f} ms"
 
 
-def build(run_dirs: Iterable[Path], out: Path) -> Dict[str, Any]:
-    board = collect(run_dirs)
+def build(run_dirs: Iterable[Path], out: Path, allow_mixed: bool = False) -> Dict[str, Any]:
+    board = collect(run_dirs, allow_mixed=allow_mixed)
     out.mkdir(parents=True, exist_ok=True)
     rows = [row(ds, sys_, cell) for ds in sorted(board) for sys_, cell in sorted(board[ds].items()) if cell.get("result")]
     _write_csv(out / "scoreboard.csv", rows)
