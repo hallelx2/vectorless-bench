@@ -150,6 +150,9 @@ def test_mixed_board_never_pairs_one_setups_speed_with_anothers_quality(tmp_path
                                     "answer_prompt": "excerpts-calc-v3", "judge_model": "jev-latest"}
     (acc / "manifest.json").write_text(json.dumps(man))
     (acc / "records.jsonl").write_text(json.dumps(_rec("vectorless", "q1", 1.0, 0.01, 900, phase="accuracy")))
+    build([timed], tmp_path / "alone")
+    alone = json.loads((tmp_path / "alone" / "scoreboard.json").read_text())["rows"][0]
+    assert alone["p50_ms"] is not None, "the timed run must carry latency for this test to mean anything"
     build([timed, acc], tmp_path / "out", allow_mixed=True)
     row = json.loads((tmp_path / "out" / "scoreboard.json").read_text())["rows"][0]
     assert row["setup"].startswith("gemini-2.5-flash-lite")
