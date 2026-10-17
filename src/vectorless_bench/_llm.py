@@ -274,11 +274,23 @@ def complete_patient(*args: Any, attempts: int = 4, pause: float = 90.0, **kwarg
     pilot's MemWalker on FinanceBench, 2026-10-16). Here a refusal that
     survives complete()'s own retries waits pause*attempt seconds and tries
     again, up to `attempts` times. Only refusals for load are retried."""
+    return _patiently(complete, *args, attempts=attempts, pause=pause, **kwargs)
+
+
+def generate_patient(*args: Any, attempts: int = 4, pause: float = 90.0, **kwargs: Any):
+    """generate() with the same patience as complete_patient."""
+    return _patiently(generate, *args, attempts=attempts, pause=pause, **kwargs)
+
+
+def _patiently(fn: Any, *args: Any, attempts: int, pause: float, **kwargs: Any):
+    """Call fn; a refusal for load that outlasts fn's own retries waits
+    pause*attempt seconds and tries again, up to `attempts` times. Anything
+    else is raised at once."""
     import time as _t
 
     for attempt in range(1, attempts + 1):
         try:
-            return complete(*args, **kwargs)
+            return fn(*args, **kwargs)
         except Exception as e:
             if not _busy(e) or attempt == attempts:
                 raise
