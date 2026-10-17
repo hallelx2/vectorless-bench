@@ -265,35 +265,55 @@ def count_tokens(model: str, text: str) -> int:
     return int(r.total_tokens or 0)
 
 
-def complete_patient(*args: Any, attempts: int = 4, pause: float = 90.0, **kwargs: Any):
-    """complete() for index builds, which make hundreds of calls in a burst.
+def patience_seconds() -> float:
+    """How long a refused call keeps being retried before it counts as
+    failed: VLBENCH_PATIENCE_SECONDS, default two hours. Under Vertex's
+    shared quota a refusal costs time, not a question (HAL-3284)."""
+    try:
+        return float(os.environ.get("VLBENCH_PATIENCE_SECONDS", "7200"))
+    except ValueError:
+        return 7200.0
 
-    complete() already retries a refusal for about two minutes. A build that
-    hits a long spell of Vertex's shared capacity being busy can outlast
-    that, and one refused summary used to void a whole system's setup (the
-    pilot's MemWalker on FinanceBench, 2026-10-16). Here a refusal that
-    survives complete()'s own retries waits pause*attempt seconds and tries
-    again, up to `attempts` times. Only refusals for load are retried."""
+
+def complete_patient(*args: Any, attempts: Optional[int] = None, pause: float = 90.0, **kwargs: Any):
+    """complete() for calls that must not be lost to Vertex's shared
+    capacity being busy: index builds (hundreds of calls in a burst) and,
+    since HAL-3284, every rival's question-time call. complete() already
+    retries a refusal for about two minutes; past that this keeps waiting
+    and retrying until patience_seconds() runs out (or `attempts`, when
+    given). One refused summary used to void a whole system's setup (the
+    pilot's MemWalker on FinanceBench, 2026-10-16), and refused question-time
+    calls voided all 150 of PageIndex's pilot questions (2026-10-17)."""
     return _patiently(complete, *args, attempts=attempts, pause=pause, **kwargs)
 
 
-def generate_patient(*args: Any, attempts: int = 4, pause: float = 90.0, **kwargs: Any):
+def generate_patient(*args: Any, attempts: Optional[int] = None, pause: float = 90.0, **kwargs: Any):
     """generate() with the same patience as complete_patient."""
     return _patiently(generate, *args, attempts=attempts, pause=pause, **kwargs)
 
 
-def _patiently(fn: Any, *args: Any, attempts: int, pause: float, **kwargs: Any):
-    """Call fn; a refusal for load that outlasts fn's own retries waits
-    pause*attempt seconds and tries again, up to `attempts` times. Anything
-    else is raised at once."""
+# The longest single wait between patient retries.
+_MAX_PAUSE = 300.0
+
+
+def _patiently(fn: Any, *args: Any, attempts: Optional[int] = None, pause: float = 90.0,
+               budget: Optional[float] = None, **kwargs: Any):
+    """Call fn. A refusal for load that outlasts fn's own retries waits
+    min(pause*attempt, 300) seconds and tries again, until `budget` seconds
+    (default patience_seconds()) have passed, or `attempts` calls when
+    given. Anything that is not a refusal for load is raised at once."""
     import time as _t
 
-    for attempt in range(1, attempts + 1):
+    deadline = _t.monotonic() + (patience_seconds() if budget is None else budget)
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            if not _busy(e) or attempt == attempts:
+            out_of_tries = attempts is not None and attempt >= attempts
+            if not _busy(e) or out_of_tries or _t.monotonic() >= deadline:
                 raise
-            _cooldown(pause * attempt * 0.5)
-            _t.sleep(pause * attempt)
-    raise RuntimeError("unreachable")
+            wait = min(pause * attempt, _MAX_PAUSE, max(0.0, deadline - _t.monotonic()))
+            _cooldown(wait * 0.5)
+            _t.sleep(wait)

@@ -29,7 +29,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from .._llm import DEFAULT_MODEL, complete, complete_patient, require_vertex_model
+from .._llm import DEFAULT_MODEL, _patiently, complete, complete_patient, require_vertex_model
 from ..datasets.base import CORPUS
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 from ._chunk import chunk_doc
@@ -111,7 +111,8 @@ class MemWalkerRetriever:
         pass
 
     def _ask(self, system: str, user: str, usage: Usage) -> Dict[str, Any]:
-        out = complete(self.model, system, user, max_tokens=60, json_mode=True)
+        # a refusal for load costs time, never the question (HAL-3284)
+        out = _patiently(complete, self.model, system, user, max_tokens=60, json_mode=True)
         usage.add(out.usage)
         try:
             return json.loads(out.text)

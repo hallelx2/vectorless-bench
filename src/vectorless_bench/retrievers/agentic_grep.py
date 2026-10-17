@@ -24,7 +24,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .._llm import DEFAULT_MODEL, generate, require_vertex_model
+from .._llm import DEFAULT_MODEL, generate_patient, require_vertex_model
 from ..datasets.base import CORPUS
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
@@ -142,7 +142,8 @@ class AgenticGrepRetriever:
         try:
             while turns < self.max_turns and not finished:
                 turns += 1
-                out = generate(self.model, system=_SYSTEM, contents=contents, max_tokens=1024, tools=_tools())
+                # a refusal for load costs time, never the question (HAL-3284)
+                out = generate_patient(self.model, system=_SYSTEM, contents=contents, max_tokens=1024, tools=_tools())
                 usage.add(out.usage)
                 if not out.tool_calls:
                     break

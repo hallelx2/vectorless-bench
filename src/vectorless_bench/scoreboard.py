@@ -57,6 +57,27 @@ _LABEL = {
 }
 
 
+_THROTTLED = ("RESOURCE_EXHAUSTED", "RateLimitError", "429 Too Many Requests", "Resource exhausted")
+
+
+def throttled(error: Optional[str]) -> bool:
+    """A row lost to the provider refusing for load rather than to the
+    system: such a row measures Google's spare capacity, not the system."""
+    return bool(error) and any(t in error for t in _THROTTLED)
+
+
+def _throttled_counts(run_dir: Path) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    with open(run_dir / "records.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if throttled(r.get("error")) or throttled((r.get("trace") or {}).get("grading_error")):
+                counts[r["system"]] = counts.get(r["system"], 0) + 1
+    return counts
+
+
 def _load(run_dir: Path) -> Optional[Dict[str, Any]]:
     if not (run_dir / "records.jsonl").exists():
         return None
@@ -64,7 +85,11 @@ def _load(run_dir: Path) -> Optional[Dict[str, Any]]:
     if (run_dir / "manifest.json").exists():
         man = json.loads((run_dir / "manifest.json").read_text())
     k = int(man.get("k") or 5)
-    return {"dir": str(run_dir), "manifest": man, "k": k, "results": summarize(run_dir, k)}
+    results = summarize(run_dir, k)
+    for system, n in _throttled_counts(run_dir).items():
+        if system in results:
+            results[system]["throttled"] = n
+    return {"dir": str(run_dir), "manifest": man, "k": k, "results": results}
 
 
 def _phase(entry: Dict[str, Any], system: str) -> str:
@@ -145,7 +170,30 @@ def _num(x: Any) -> Optional[float]:
     return None if math.isinf(f) or math.isnan(f) else f
 
 
+# Row fields that are measurements, withheld from a cell that lost questions
+# to throttling (HAL-3284).
+_MEASURED = ("quality", "quality_lo", "quality_hi", "reachable_quality", "reachable_share", "native",
+             "answer_accuracy", "answer_declined", "abstained", "usd_per_question", "usd_per_correct",
+             "grading_usd_per_question", "context_tokens", "p50_ms", "p95_ms", "questions_per_minute")
+
+
 def row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
+    out = _row(dataset, system, cell)
+    lost = (cell.get("result") or {}).get("throttled") or 0
+    out["throttled_errors"] = lost
+    out["publishable"] = lost == 0
+    if lost:
+        # A cell with questions lost to refusals measures the provider, not
+        # the system: its numbers are withheld, never shown as a score.
+        for key in list(out):
+            if key in _MEASURED or key.startswith("hit@"):
+                out[key] = None
+        out["withheld"] = f"{lost} question(s) lost to provider refusals; re-run before publishing"
+        out["label"] = f"{out['label']} (withheld: {lost} lost to refusals)"
+    return out
+
+
+def _row(dataset: str, system: str, cell: Dict[str, Any]) -> Dict[str, Any]:
     r = cell.get("result") or {}
     # speed only beside quality measured the same way: with --allow-mixed a
     # 3.5 latency run must not be shown as a 2.5 accuracy run's latency
