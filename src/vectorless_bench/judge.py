@@ -33,15 +33,32 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence
 
 from ._llm import complete
+from .calc import resolve
 from .schema import Question, RetrievedSection, Usage
 
+# The shared answer step's prompt, versioned: every graded row records the
+# version it was written with, so a scoreboard never compares answers from
+# two prompts (HAL-3203). v1 joined unlabelled excerpts and declined
+# anything not stated outright: on the pilot's Vectorless declines it
+# answered 3 of 15 whose gold page it had been given. v3 labels the
+# excerpts, lets the model derive and judge, and does the arithmetic in
+# code (calc.py): the model sets each calculation up, it does not work it
+# out.
+ANSWER_PROMPT = "excerpts-calc-v3"
 _GEN_SYSTEM = (
-    "Answer the question using ONLY the provided context. If the context is "
-    "insufficient, reply exactly: INSUFFICIENT. Be concise."
+    "You answer a question from numbered excerpts of a document. Use only what the excerpts show. "
+    "When the question asks for a figure the excerpts let you derive (a ratio, margin, growth rate, change, "
+    "average or sum), find each input in the excerpts and set the calculation up, but do not work it out: "
+    "write it as <<expression>> using only the numbers from the excerpts, + - * / and parentheses, and it is "
+    "computed for you. For example: operating margin = <<11,512 / 86,392 * 100>>%. "
+    "When it asks for a judgement (is a business cyclical, is a company growing fast, what drove a change), "
+    "answer it from the facts the excerpts state and name those facts. "
+    "Cite the excerpts you used by number, like [2]. Be concise. "
+    "Reply exactly INSUFFICIENT, and nothing else, only when the excerpts lack an input the answer needs."
 )
 _VERDICTS = [
     ("correct", "The candidate answer states the same facts as the gold answer. Differences in wording, "
@@ -73,6 +90,30 @@ class JudgeResult:
     # The answer the shared model wrote from the retrieved passages, kept for
     # the dataset-native answer metrics (QASPER F1, CUAD clause match).
     candidate: Optional[str] = None
+    prompt: str = ANSWER_PROMPT
+    # The calculations the answer set up and code evaluated.
+    calculations: List[Any] = field(default_factory=list)
+
+
+def _label(i: int, s: RetrievedSection) -> str:
+    """`[n] document — section, p.N`: whatever the system said about where
+    the excerpt is from. A chunk retriever that returns bare text gets a
+    bare number; nothing is invented for it."""
+    where = s.title or " › ".join(s.title_path)
+    parts = [p for p in (s.doc_id, where) if p]
+    label = f"[{i}]"
+    if parts:
+        label += " " + " — ".join(parts)
+    if s.page is not None and not where.endswith(f"p.{s.page}"):
+        label += f", p.{s.page}"
+    return label
+
+
+def excerpts(sections: Sequence[RetrievedSection]) -> str:
+    """The numbered, labelled excerpts the shared answer step reads."""
+    if not sections:
+        return "(no excerpts)"
+    return "\n\n".join(f"{_label(i, s)}\n{s.content}" for i, s in enumerate(sections, 1))
 
 
 def _sampled(qid: str, rate: float = 0.10) -> bool:
@@ -102,25 +143,27 @@ class Judge:
 
             parts = list(answer_parts) + [types.Part(text=f"QUESTION: {question.question}")]
             gen = generate(self.gen_model, system=_GEN_SYSTEM, contents=[types.Content(role="user", parts=parts)],
-                           max_tokens=400)
+                           max_tokens=600)
         else:
-            context = "\n\n---\n\n".join(s.content for s in sections) or "(no context)"
-            gen = complete(self.gen_model, _GEN_SYSTEM, f"CONTEXT:\n{context}\n\nQUESTION: {question.question}",
-                           max_tokens=400)
+            gen = complete(self.gen_model, _GEN_SYSTEM, f"EXCERPTS:\n{excerpts(sections)}\n\nQUESTION: {question.question}",
+                           max_tokens=600)
         usage.add(gen.usage)
-        candidate = gen.text.strip()
+        candidate, calcs = resolve(gen.text.strip())
+        calculations = [asdict(c) for c in calcs]
         declined = candidate.upper().startswith("INSUFFICIENT")
 
         if question.is_no_answer:
             # correct behaviour is to decline; reward INSUFFICIENT
             ok = 1.0 if declined else 0.0
-            return JudgeResult(candidate=candidate, correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
+            return JudgeResult(candidate=candidate, calculations=calculations, correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
                                verdict="abstained" if declined else "answered_unanswerable")
         if declined:
-            return JudgeResult(candidate=candidate, correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
+            return JudgeResult(candidate=candidate, calculations=calculations, correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
 
         if self._jev is None:
-            return self._legacy(question, candidate, usage)
+            res = self._legacy(question, candidate, usage)
+            res.calculations = calculations
+            return res
 
         state = {"question": question.question, "gold_answer": question.answer or "", "candidate_answer": candidate}
         q = {"verdict": (_INSTRUCTIONS, _VERDICTS)}
@@ -132,7 +175,7 @@ class Judge:
             again, ju2, _ = self._jev.choose(state, q)
             usage.add(ju2)
             repeat = again["verdict"].choice
-        return JudgeResult(candidate=candidate, 
+        return JudgeResult(candidate=candidate, calculations=calculations,
             correct=1.0 if v.choice == "correct" else (0.5 if v.choice == "partially_correct" else 0.0),
             faithful=1.0 if v.choice in ("correct", "partially_correct") else 0.0,
             answered=0.0 if v.choice == "abstained" else 1.0,

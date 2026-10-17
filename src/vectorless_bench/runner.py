@@ -344,7 +344,8 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
         if native is not None:
             m.update(native.answer(q, jr.candidate))
         # the answer itself, so any grade can be read and checked
-        result.trace = dict(result.trace or {}, answer=jr.candidate or "", verdict=jr.verdict,
+        result.trace = dict(result.trace or {}, answer=jr.candidate or "", verdict=jr.verdict, answer_prompt=jr.prompt,
+                            calculations=jr.calculations,
                             answered_from="system context" if getattr(result, "answer_parts", None) else "returned units")
     return RunRecord(
         latency_ms=wall_ms, wall_ms=wall_ms, reported_ms=result.latency_ms,
