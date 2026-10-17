@@ -22,7 +22,11 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 _EXPR = re.compile(r"<<(.+?)>>", re.S)
-_NUMBER = re.compile(r"[$€£]?\s*\d[\d,]*(?:\.\d+)?%?|[$€£]?\s*\.\d+%?")
+# A currency sign may be followed by a space; a bare number may not be
+# preceded by one (so "5 3" stays two numbers and fails). Thousands
+# separators only in real groups: "1,174" is 1174, "1,2" and "1, 2" are not
+# numbers and fail rather than read as 12.
+_NUMBER = re.compile(r"(?:[$€£]\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?|(?:[$€£]\s*)?\.\d+%?")
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
 
 
@@ -54,14 +58,19 @@ def evaluate(expr: str) -> float:
     """The value of one arithmetic expression; CalcError when it is not one."""
     try:
         tree = ast.parse(_normalise(expr), mode="eval")
-    except SyntaxError as e:
-        raise CalcError(f"not an arithmetic expression: {expr!r}") from e
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as e:
+        # model output is untrusted: a null byte, deep nesting or a huge
+        # literal must say "could not be computed", not abort the grade
+        raise CalcError(f"not an arithmetic expression: {expr[:80]!r}") from e
 
     def ev(node: ast.AST) -> float:
         if isinstance(node, ast.Expression):
             return ev(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
-            return float(node.value)
+            try:
+                return float(node.value)
+            except OverflowError as e:
+                raise CalcError("number too large") from e
         if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
             left, right = ev(node.left), ev(node.right)
             if isinstance(node.op, ast.Div) and right == 0:
@@ -72,7 +81,10 @@ def evaluate(expr: str) -> float:
             return v if isinstance(node.op, ast.UAdd) else -v
         raise CalcError(f"not allowed in a calculation: {ast.dump(node)[:60]}")
 
-    v = ev(tree)
+    try:
+        v = ev(tree)
+    except RecursionError as e:
+        raise CalcError("nested too deeply") from e
     if math.isnan(v) or math.isinf(v):
         raise CalcError("not a finite number")
     return v

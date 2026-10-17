@@ -17,7 +17,9 @@ def test_evaluate(expr, want):
     assert evaluate(expr) == pytest.approx(want, rel=1e-4)
 
 
-@pytest.mark.parametrize("expr", ["__import__('os')", "2 ** 10", "1 / 0", "abs(-1)", "x + 1", "", "1 +"])
+@pytest.mark.parametrize("expr", ["__import__('os')", "2 ** 10", "1 / 0", "abs(-1)", "x + 1", "", "1 +",
+                                  "5 3", "1, 2", "1,2", "1\x00 + 2", "(" * 5000 + "1" + ")" * 5000,
+                                  "9" * 400 + " * 1"])
 def test_only_arithmetic_is_evaluated(expr):
     with pytest.raises(CalcError):
         evaluate(expr)
