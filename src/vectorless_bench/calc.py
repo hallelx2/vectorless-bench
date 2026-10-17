@@ -99,9 +99,14 @@ def fmt(v: float) -> str:
 
 def _plain(v: float) -> str:
     """An inner result written back into its outer expression at full
-    precision, in a form the number grammar reads (no exponent)."""
-    s = f"{v:.12f}".rstrip("0").rstrip(".")
-    return s if s not in ("", "-0") else "0"
+    precision (the shortest form that reads back as the same float), in a
+    form the number grammar reads: no exponent, no grouping."""
+    from decimal import Decimal
+
+    s = format(Decimal(repr(v)), "f")
+    if "." in s:  # repr's digits are exact; trailing zeros after the point are not digits
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
 
 
 def resolve(text: str) -> Tuple[str, List[Calculation]]:

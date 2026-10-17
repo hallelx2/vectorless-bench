@@ -66,4 +66,7 @@ def test_an_unbalanced_marker_is_never_a_number(raw, want):
 
 def test_an_inner_result_keeps_its_precision():
     text, _ = resolve("<<<<1 / 3>> * 3>>")
-    assert text == "1 (= 0.333333333333 * 3)"
+    assert text == "1 (= 0.3333333333333333 * 3)"
+    # small and large inner results keep every digit (no rounding to 12 places)
+    assert resolve("<<1 / <<0.0000000000001 * 1>>>>")[1][-1].value == pytest.approx(1e13)
+    assert resolve("<<<<1 / 3>> * 1000000000000>>")[1][-1].value == pytest.approx(1e12 / 3)
