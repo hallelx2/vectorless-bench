@@ -36,7 +36,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, List, Optional, Sequence
 
-from ._llm import complete
+from ._llm import _patiently, complete
 from .calc import resolve
 from .schema import Question, RetrievedSection, Usage
 
@@ -47,9 +47,8 @@ from .schema import Question, RetrievedSection, Usage
 # answered 3 of 15 whose gold page it had been given. v3 labels the
 # excerpts, lets the model derive and judge, and does the arithmetic in
 # code (calc.py): the model sets each calculation up, it does not work it
-# out.
-ANSWER_PROMPT = "excerpts-calc-v3"
-_GEN_SYSTEM = (
+# out. v4: see _V4.
+_V3 = (
     "You answer a question from numbered excerpts of a document. Use only what the excerpts show. "
     "When the question asks for a figure the excerpts let you derive (a ratio, margin, growth rate, change, "
     "average or sum), find each input in the excerpts and set the calculation up, but do not work it out: "
@@ -60,6 +59,31 @@ _GEN_SYSTEM = (
     "Cite the excerpts you used by number, like [2]. Be concise. "
     "Reply exactly INSUFFICIENT, and nothing else, only when the excerpts lack an input the answer needs."
 )
+# v4 (HAL-3247), kept for experiments, not the default: rules for "none"
+# answers, a question's own alternative and judgement questions. Measured on
+# the 100 FinanceBench questions outside the pilot's sample, it declined 27%
+# against v3's 29% but answered 21% wrongly against 18%, so v3 stays. In
+# 21 of v3's 29 declines the gold page was in the top five: the prompt is not
+# what stops the answer.
+_V4 = (
+    "You answer a question from numbered excerpts of a document. Use only what the excerpts show.\n"
+    "- A figure the excerpts let you derive (a ratio, margin, growth rate, change, average or sum): find each "
+    "input in the excerpts and set the calculation up, but do not work it out. Write it as <<expression>> using "
+    "only numbers from the excerpts, + - * / and parentheses, and it is computed for you, for example "
+    "operating margin = <<11,512 / 86,392 * 100>>%. Apply the question's own definitions term by term; an "
+    "average of two values is their sum divided by 2.\n"
+    "- A judgement (is a business cyclical, is a company growing fast, what drove a change): answer yes or no, "
+    "or name the cause, from the facts and figures the excerpts state, and name them.\n"
+    "- \"None\" is an answer: when the excerpts cover what the question asks about (the acquisitions note, the "
+    "vote results, the segment table) and show no such item, say there was none and cite where.\n"
+    "- When the question offers its own alternative (\"if X is not a useful metric, say so and explain why\"), "
+    "that alternative is a full answer when the excerpts support it.\n"
+    "Cite the excerpts you used by number, like [2]. Be concise. Reply exactly INSUFFICIENT, and nothing else, "
+    "only when the excerpts lack an input the answer needs and none of the above applies."
+)
+PROMPTS = {"excerpts-calc-v3": _V3, "excerpts-calc-v4": _V4}
+ANSWER_PROMPT = "excerpts-calc-v3"
+_GEN_SYSTEM = PROMPTS[ANSWER_PROMPT]
 _VERDICTS = [
     ("correct", "The candidate answer states the same facts as the gold answer. Differences in wording, "
                 "formatting, units or rounding that do not change the meaning are fine."),
@@ -122,7 +146,13 @@ def _sampled(qid: str, rate: float = 0.10) -> bool:
 
 
 class Judge:
-    def __init__(self, gen_model: str, judge_model: str, repeat_rate: float = 0.10) -> None:
+    def __init__(self, gen_model: str, judge_model: str, repeat_rate: float = 0.10,
+                 prompt: str = ANSWER_PROMPT) -> None:
+        if prompt not in PROMPTS:
+            raise ValueError(f"unknown answer prompt {prompt!r}; known: {sorted(PROMPTS)}")
+        self.prompt = prompt
+        self.system = PROMPTS[prompt]
+        self.patience = 90.0  # seconds before the first patient retry; tests shorten it
         self.gen_model = gen_model
         self.judge_model = judge_model
         self.repeat_rate = repeat_rate
@@ -142,11 +172,16 @@ class Judge:
             from ._llm import generate
 
             parts = list(answer_parts) + [types.Part(text=f"QUESTION: {question.question}")]
-            gen = generate(self.gen_model, system=_GEN_SYSTEM, contents=[types.Content(role="user", parts=parts)],
+            # patient like the index builds: a 429 spell must not leave the
+            # row ungraded (HAL-3262)
+            gen = _patiently(generate, self.gen_model, attempts=4, pause=self.patience, system=self.system, contents=[types.Content(role="user", parts=parts)],
                            max_tokens=600)
         else:
-            gen = complete(self.gen_model, _GEN_SYSTEM, f"EXCERPTS:\n{excerpts(sections)}\n\nQUESTION: {question.question}",
-                           max_tokens=600)
+            # patient like the index builds: a 429 spell must not leave the
+            # row ungraded (HAL-3262)
+            gen = _patiently(complete, self.gen_model, self.system,
+                             f"EXCERPTS:\n{excerpts(sections)}\n\nQUESTION: {question.question}",
+                             attempts=4, pause=self.patience, max_tokens=600)
         usage.add(gen.usage)
         candidate, calcs = resolve(gen.text.strip())
         calculations = [asdict(c) for c in calcs]
@@ -155,10 +190,10 @@ class Judge:
         if question.is_no_answer:
             # correct behaviour is to decline; reward INSUFFICIENT
             ok = 1.0 if declined else 0.0
-            return JudgeResult(candidate=candidate, calculations=calculations, correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
+            return JudgeResult(prompt=self.prompt, candidate=candidate, calculations=calculations, correct=ok, faithful=ok, answered=0.0 if declined else 1.0, usage=usage,
                                verdict="abstained" if declined else "answered_unanswerable")
         if declined:
-            return JudgeResult(candidate=candidate, calculations=calculations, correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
+            return JudgeResult(prompt=self.prompt, candidate=candidate, calculations=calculations, correct=0.0, faithful=1.0, answered=0.0, usage=usage, verdict="abstained")
 
         if self._jev is None:
             res = self._legacy(question, candidate, usage)
@@ -175,7 +210,7 @@ class Judge:
             again, ju2, _ = self._jev.choose(state, q)
             usage.add(ju2)
             repeat = again["verdict"].choice
-        return JudgeResult(candidate=candidate, calculations=calculations,
+        return JudgeResult(prompt=self.prompt, candidate=candidate, calculations=calculations,
             correct=1.0 if v.choice == "correct" else (0.5 if v.choice == "partially_correct" else 0.0),
             faithful=1.0 if v.choice in ("correct", "partially_correct") else 0.0,
             answered=0.0 if v.choice == "abstained" else 1.0,
@@ -191,5 +226,5 @@ class Judge:
             v = json.loads(verdict.text)
         except json.JSONDecodeError:
             v = {"correct": False, "faithful": False}
-        return JudgeResult(candidate=candidate, correct=1.0 if v.get("correct") else 0.0, faithful=1.0 if v.get("faithful") else 0.0,
+        return JudgeResult(prompt=self.prompt, candidate=candidate, correct=1.0 if v.get("correct") else 0.0, faithful=1.0 if v.get("faithful") else 0.0,
                            answered=1.0, usage=usage, verdict="legacy")

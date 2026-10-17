@@ -32,6 +32,7 @@ class RunConfig:
     judge: bool = False
     judge_model: str = "jev-latest"  # graded on Jev, a closed-set verdict (HAL-3047)  # HAL-3047 moves grading to Jev
     gen_model: str = "gemini-3.5-flash-lite"  # answer generator for the judge axis
+    answer_prompt: str = "excerpts-calc-v3"  # the shared answer step's prompt version (judge.PROMPTS)
 
     # How the run is timed (HAL-3032). "latency": one question at a time, every
     # sample bracketed by host evidence and rerun if the machine was busy.

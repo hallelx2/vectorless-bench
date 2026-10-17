@@ -124,7 +124,7 @@ def run(cfg: RunConfig, progress: bool = True) -> Path:
     if cfg.judge:
         from .judge import Judge
 
-        judge = Judge(cfg.gen_model, cfg.judge_model)
+        judge = Judge(cfg.gen_model, cfg.judge_model, prompt=cfg.answer_prompt)
 
     # Each dataset's own published metric, beside the anchor metrics (HAL-3087).
     from .metrics.native import NativeScorer
@@ -362,10 +362,8 @@ def _eval_one(system, q: Question, retriever, cfg: RunConfig, judge, repeat: int
 def answer_setup(cfg: RunConfig) -> Dict[str, Any]:
     """What the run's answers depend on besides retrieval. The scoreboard
     never puts two of these side by side (HAL-3214)."""
-    from .judge import ANSWER_PROMPT
-
     return {"model": cfg.model, "gen_model": cfg.gen_model if cfg.judge else None,
-            "answer_prompt": ANSWER_PROMPT if cfg.judge else None,
+            "answer_prompt": cfg.answer_prompt if cfg.judge else None,
             "judge_model": cfg.judge_model if cfg.judge else None}
 
 
