@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .._llm import DEFAULT_MODEL, project, require_vertex_model
+from .._llm import DEFAULT_MODEL, patience_seconds, project, require_vertex_model
 from ..datasets.base import CORPUS
 from ..pricing import compute
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
@@ -233,7 +233,10 @@ def _rate_limited(e: Exception) -> bool:
     code = getattr(e, "status_code", None) or getattr(e, "code", None)
     if isinstance(code, int):
         return code in (429, 503)
-    return "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e).split()
+    msg = str(e)
+    # litellm reraises a mid-stream 429 as MidStreamFallbackError whose text
+    # names the RateLimitError (the pilot's 37 QASPER failures)
+    return "RESOURCE_EXHAUSTED" in msg or "RateLimitError" in msg or "429" in msg.split()
 
 
 def _output_text(out: Any) -> str:
@@ -290,10 +293,15 @@ class PageIndexRetriever:
         try:
             for d in corpus:
                 path = self._source_path(d)
-                # Vertex shared capacity refuses bursts at times (429); a
-                # document is retried after a pause before it counts as failed.
+                # Vertex shared capacity refuses bursts (429); a document is
+                # retried after a pause until patience_seconds() runs out,
+                # not a fixed few tries: 4 tries lost 13 of QASPER's 48
+                # documents at a 90% refusal rate (HAL-3284).
                 last = None
-                for attempt in range(4):
+                deadline = time.monotonic() + patience_seconds()
+                attempt = 0
+                while True:
+                    attempt += 1
                     try:
                         res = self._client.submit_document(path)
                         self._doc_ids[d.doc_id] = res["doc_id"]
@@ -301,9 +309,9 @@ class PageIndexRetriever:
                         break
                     except Exception as e:
                         last = e
-                        if not _rate_limited(e) or attempt == 3:
-                            break  # not retryable, or the last attempt: no dead time on the clock
-                        time.sleep(60 * (attempt + 1))
+                        if not _rate_limited(e) or time.monotonic() >= deadline:
+                            break  # not retryable, or out of patience: no dead time on the clock
+                        time.sleep(min(60.0 * attempt, 300.0, max(0.0, deadline - time.monotonic())))
                 if last is not None:  # one bad document must not void the run
                     self.setup_meta["failed"].append({"doc": d.doc_id, "error": str(last)[:300]})
         finally:
@@ -332,13 +340,39 @@ class PageIndexRetriever:
         pass
 
     def retrieve(self, question: Question, k: int, cold: bool = True) -> RetrievalResult:
+        """One question through PageIndex's chat agent. A refusal for load
+        mid-question restarts the question after a pause, until
+        patience_seconds() runs out (HAL-3284: refusals voided all 150 of
+        its pilot questions). Latency is the final attempt's; the spend of
+        attempts cut short is kept in the usage."""
+        deadline = time.monotonic() + patience_seconds()
+        wasted = Usage()
+        retries, waited = 0, 0.0
+        while True:
+            res, err = self._ask_once(question, k, cold)
+            if err is None or not _rate_limited(err) or time.monotonic() >= deadline:
+                break
+            if res.usage is not None:
+                wasted.add(res.usage)
+            retries += 1
+            pause = min(60.0 * retries, 300.0, max(0.0, deadline - time.monotonic()))
+            time.sleep(pause)
+            waited += pause
+        if retries:
+            if res.usage is not None:
+                res.usage.add(wasted)
+            res.trace = dict(res.trace or {}, throttled_retries=retries, throttle_wait_s=round(waited, 1),
+                             throttled_attempts_cost_usd=round(wasted.cost_usd, 8))
+        return res
+
+    def _ask_once(self, question: Question, k: int, cold: bool) -> "tuple[RetrievalResult, Optional[Exception]]":
         if question.doc_id == CORPUS:
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, cold=cold,
-                                   error="n/a: PageIndex's agent reads one indexed document; this question spans the corpus")
+                                   error="n/a: PageIndex's agent reads one indexed document; this question spans the corpus"), None
         pid = self._doc_ids.get(question.doc_id)
         if pid is None:
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, cold=cold,
-                                   error=f"document {question.doc_id!r} was not indexed by PageIndex")
+                                   error=f"document {question.doc_id!r} was not indexed by PageIndex"), None
         usage = Usage()
         sections: List[RetrievedSection] = []
         tools: List[str] = []
@@ -381,7 +415,7 @@ class PageIndexRetriever:
             _SINK.exit(usage, token)
             _SINK.call_seconds(usage)
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
-                                   error=str(e)[:500], cold=cold, trace={"tools": tools})
+                                   error=str(e)[:500], cold=cold, trace={"tools": tools}), e
         total_ms = (time.perf_counter() - t0) * 1000.0
         usage_complete = _SINK.exit(usage, token)
         _SINK.call_seconds(usage)
@@ -396,4 +430,4 @@ class PageIndexRetriever:
                    "retrieval_llm_calls": retrieval_usage.llm_calls,
                    "answer_cost_usd": round(usage.cost_usd - retrieval_usage.cost_usd, 8),
                    "answer_chars": answer_chars, "usage_complete": usage_complete},
-        )
+        ), None

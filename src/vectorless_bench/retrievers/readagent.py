@@ -26,7 +26,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 
-from .._llm import DEFAULT_MODEL, complete, complete_patient, require_vertex_model
+from .._llm import DEFAULT_MODEL, _patiently, complete, complete_patient, require_vertex_model
 from ..datasets.base import CORPUS
 from ..schema import Doc, Question, RetrievalResult, RetrievedSection, Usage
 
@@ -151,7 +151,8 @@ class ReadAgentRetriever:
         t0 = time.perf_counter()
         memory = "\n".join(f"<Page {i}> {g}" for i, g in enumerate(gists))
         try:
-            out = complete(self.model, _LOOKUP.format(n=self.max_lookups),
+            # a refusal for load costs time, never the question (HAL-3284)
+            out = _patiently(complete, self.model, _LOOKUP.format(n=self.max_lookups),
                            f"QUESTION: {question.question}\n\nGIST MEMORY:\n{memory}", max_tokens=80, json_mode=True)
         except Exception as e:  # pragma: no cover - network
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, error=str(e)[:500], cold=cold)

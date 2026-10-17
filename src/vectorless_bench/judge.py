@@ -174,14 +174,14 @@ class Judge:
             parts = list(answer_parts) + [types.Part(text=f"QUESTION: {question.question}")]
             # patient like the index builds: a 429 spell must not leave the
             # row ungraded (HAL-3262)
-            gen = _patiently(generate, self.gen_model, attempts=4, pause=self.patience, system=self.system, contents=[types.Content(role="user", parts=parts)],
+            gen = _patiently(generate, self.gen_model, pause=self.patience, system=self.system, contents=[types.Content(role="user", parts=parts)],
                            max_tokens=600)
         else:
             # patient like the index builds: a 429 spell must not leave the
             # row ungraded (HAL-3262)
             gen = _patiently(complete, self.gen_model, self.system,
                              f"EXCERPTS:\n{excerpts(sections)}\n\nQUESTION: {question.question}",
-                             attempts=4, pause=self.patience, max_tokens=600)
+                             pause=self.patience, max_tokens=600)
         usage.add(gen.usage)
         candidate, calcs = resolve(gen.text.strip())
         calculations = [asdict(c) for c in calcs]
