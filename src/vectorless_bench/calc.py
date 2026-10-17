@@ -63,6 +63,9 @@ def _power(base: float, exp: float) -> float:
     """base ** exp for compound growth and roots (HAL-3274), refused rather
     than guessed: no huge exponent, no fractional power of a negative number
     (that has no real value), nothing that overflows."""
+    if not (math.isfinite(base) and math.isfinite(exp)):
+        # inf ** 0 is 1: an operand that already overflowed must not vanish
+        raise CalcError("an operand of the power is not a finite number")
     if abs(exp) > _MAX_EXPONENT:
         raise CalcError(f"exponent {exp} is beyond {_MAX_EXPONENT}")
     if base < 0 and exp != int(exp):
@@ -101,7 +104,10 @@ def evaluate(expr: str) -> float:
             left, right = ev(node.left), ev(node.right)
             if isinstance(node.op, ast.Div) and right == 0:
                 raise CalcError("division by zero")
-            return _OPS[type(node.op)](left, right)
+            v = _OPS[type(node.op)](left, right)
+            if not math.isfinite(v):  # an overflow anywhere fails the whole set-up
+                raise CalcError("an intermediate result is not a finite number")
+            return v
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             v = ev(node.operand)
             return v if isinstance(node.op, ast.UAdd) else -v

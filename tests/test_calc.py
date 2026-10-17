@@ -86,7 +86,8 @@ def test_powers(expr, want):
     assert evaluate(expr) == pytest.approx(want, rel=1e-4)
 
 
-@pytest.mark.parametrize("expr", ["(-8) ** (1/3)", "2 ** 101", "10 ** 99 ** 2", "0 ** -1", "(10 ** 100) ** 4"])
+@pytest.mark.parametrize("expr", ["(10 ** 100 * 10 ** 100 * 10 ** 100 * 10 ** 100) ** 0",
+                                  "(10 ** 100 * 10 ** 100 * 10 ** 100 * 10 ** 100) * 0", "(-8) ** (1/3)", "2 ** 101", "10 ** 99 ** 2", "0 ** -1", "(10 ** 100) ** 4"])
 def test_powers_that_are_refused(expr):
     with pytest.raises(CalcError):
         evaluate(expr)
