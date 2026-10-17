@@ -499,3 +499,90 @@ def test_raptor_embeddings_wait_out_a_refusal(monkeypatch):
 
     monkeypatch.setattr(rp.time, "sleep", lambda s: None)
     assert rp._embed_patient(flaky) == "vec" and calls["n"] == 3
+
+
+def _grep_with(doc_text, context="read"):
+    from vectorless_bench.retrievers.agentic_grep import AgenticGrepRetriever
+    from vectorless_bench.schema import Doc
+
+    r = AgenticGrepRetriever(model="gemini-2.5-flash-lite", context=context)
+    r.setup([Doc(doc_id="d", title="d", content=doc_text)])
+    return r
+
+
+def test_grep_hands_the_answer_step_what_its_agent_read():
+    # HAL-3389: the agent read lines 1-40 and cited line 12 only
+    text = "\f".join(["\n".join(f"page1 line {i}" for i in range(1, 61)), "\n".join(f"page2 line {i}" for i in range(1, 61))])
+    r = _grep_with(text)
+    reads = [{"doc": "d", "page": 1, "start": 1, "end": 40, "text": "x"},
+             {"doc": "d", "page": 2, "start": 10, "end": 30, "text": "y"}]
+    secs = r._context([{"doc": "d", "page": 1, "start_line": 12, "end_line": 12}], reads, ["d"], True)
+    assert [s.page for s in secs] == [1, 2]  # the cited window first, then the rest of what it read
+    assert secs[0].content.startswith("page1 line 1\n") and secs[0].content.endswith("page1 line 40")
+    old = _grep_with(text, context="cited")._context(
+        [{"doc": "d", "page": 1, "start_line": 12, "end_line": 12}], reads, ["d"], True)
+    assert [s.content for s in old] == ["page1 line 12"]
+
+
+def test_grep_returns_its_reads_even_when_it_cites_nothing():
+    r = _grep_with("\n".join(f"line {i}" for i in range(1, 61)))
+    secs = r._context([], [{"doc": "d", "page": 1, "start": 5, "end": 20, "text": "x"}], ["d"], True)
+    assert len(secs) == 1 and secs[0].content.startswith("line 5")
+
+
+def test_grep_merges_overlapping_reads_and_widens_an_unread_citation():
+    r = _grep_with("\n".join(f"line {i}" for i in range(1, 121)))
+    reads = [{"doc": "d", "page": 1, "start": 1, "end": 30, "text": "x"},
+             {"doc": "d", "page": 1, "start": 25, "end": 50, "text": "y"}]
+    secs = r._context([{"doc": "d", "page": 1, "start_line": 100, "end_line": 101}], reads, ["d"], True)
+    assert secs[0].section_id == "d:p1:80-121" and secs[1].section_id == "d:p1:1-50"
+
+
+def test_grep_context_mode_is_checked():
+    import pytest
+
+    with pytest.raises(ValueError):
+        _grep_with("x", context="everything")
+
+
+def test_grep_agent_that_answers_in_prose_is_sent_back_to_its_tools(monkeypatch):
+    # HAL-3389: 2.5 Flash-Lite replied in text after one grep on 26 of 50
+    # pilot questions; the loop used to stop there with nothing read.
+    from types import SimpleNamespace
+    from vectorless_bench.schema import Usage
+
+    replies = iter([
+        SimpleNamespace(text="", tool_calls=[{"name": "grep", "args": {"pattern": "capex"}}], usage=Usage(), raw_content=None),
+        SimpleNamespace(text="Capex was probably high.", tool_calls=[], usage=Usage(), raw_content=None),
+        SimpleNamespace(text="", tool_calls=[{"name": "read", "args": {"doc": "d", "page": 1, "start_line": 1, "end_line": 3}}],
+                        usage=Usage(), raw_content=None),
+        SimpleNamespace(text="", tool_calls=[{"name": "finish", "args": {"evidence": [{"doc": "d", "page": 1, "start_line": 2, "end_line": 2}]}}],
+                        usage=Usage(), raw_content=None),
+    ])
+    seen = []
+
+    def fake_generate(model, system="", contents=None, **kw):
+        seen.append(contents[-1].parts[0].text if contents[-1].parts and getattr(contents[-1].parts[0], "text", None) else "")
+        return next(replies)
+
+    monkeypatch.setattr("vectorless_bench._llm.generate", fake_generate)
+    r = _grep_with("intro\ncapex was 1,577 million\nend of note")
+    out = r.retrieve(Question(qid="q", doc_id="d", question="capex?"), k=5)
+    assert out.trace["nudges"] == 1 and out.trace["finished"] and out.trace["reads"] == 1
+    assert any("Do not answer in text" in s for s in seen)
+    assert "capex was 1,577 million" in out.sections[0].content
+
+
+def test_grep_stops_nudging_after_the_limit(monkeypatch):
+    from types import SimpleNamespace
+    from vectorless_bench.schema import Usage
+
+    calls = []
+
+    def prose(model, system="", contents=None, **kw):
+        calls.append(1)
+        return SimpleNamespace(text="no idea", tool_calls=[], usage=Usage(), raw_content=None)
+
+    monkeypatch.setattr("vectorless_bench._llm.generate", prose)
+    out = _grep_with("a\nb").retrieve(Question(qid="q", doc_id="d", question="?"), k=5)
+    assert len(calls) == 3 and out.trace["nudges"] == 2 and out.sections == []

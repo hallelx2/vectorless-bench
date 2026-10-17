@@ -38,6 +38,15 @@ _SYSTEM = (
 )
 MAX_HITS = 25
 MAX_READ = 80
+# A model that replies in prose instead of calling a tool is told this, at
+# most _MAX_NUDGES times a question.
+_NUDGE = ("Keep searching with the tools: read the most promising hits with read, grep again if they miss, "
+          "and call finish with the passages that answer the question, or with none if nothing does. "
+          "Do not answer in text.")
+_MAX_NUDGES = 2
+
+# Lines kept on each side of a cited range the agent never read itself.
+_CONTEXT_LINES = 20
 
 
 class _Corpus:
@@ -107,13 +116,79 @@ def _tools():
 class AgenticGrepRetriever:
     name = "agentic_grep"
 
-    def __init__(self, model: str = DEFAULT_MODEL, max_turns: int = 12, **_: object) -> None:
+    def __init__(self, model: str = DEFAULT_MODEL, max_turns: int = 12, context: str = "read", **_: object) -> None:
         require_vertex_model(model)
+        if context not in ("read", "cited"):
+            raise ValueError(f"context must be 'read' or 'cited', not {context!r}")
         self.model = model
         self.max_turns = max_turns
+        self.context = context
         self.setup_seconds = 0.0
         self.setup_usage = Usage()
         self._corpus: Optional[_Corpus] = None
+
+    def _context(self, evidence: List[Dict[str, Any]], read_log: List[Dict[str, Any]], docs: List[str],
+                 finished: bool) -> List[RetrievedSection]:
+        """What the answer step reads from this search.
+
+        "read" (the default, HAL-3389): the windows the agent read, the ones
+        holding its citations first, then the rest of what it read, most
+        recent first, overlapping windows on a page merged. The answer step
+        sees what the agent saw, as PageIndex's units are the pages its agent
+        read. "cited" (the old behaviour): only the line ranges named in
+        finish, often one to three lines: in the pilot that averaged about
+        356 tokens and 60-70% of answers were declined."""
+        if self.context == "cited":
+            return self._cited(evidence, read_log, docs, finished)
+        windows: List[Dict[str, Any]] = []  # merged, in order of relevance
+
+        def place(doc: str, page: int, start: int, end: int) -> None:
+            for w in windows:
+                if w["doc"] == doc and w["page"] == page and start <= w["end"] + 1 and end >= w["start"] - 1:
+                    w["start"], w["end"] = min(w["start"], start), max(w["end"], end)
+                    return
+            windows.append({"doc": doc, "page": page, "start": start, "end": end})
+
+        for ev in evidence:
+            doc, page = str(ev.get("doc") or docs[0]), int(ev.get("page", 1))
+            s0, e0 = int(ev.get("start_line", 1)), int(ev.get("end_line", ev.get("start_line", 1)))
+            held = [r for r in read_log if r["doc"] == doc and r["page"] == page and r["start"] <= e0 and r["end"] >= s0]
+            if held:
+                for r in held:
+                    place(doc, page, r["start"], r["end"])
+            else:  # cited without reading it: the cited lines with their surroundings
+                place(doc, page, max(1, s0 - _CONTEXT_LINES), e0 + _CONTEXT_LINES)
+        for r in read_log[::-1]:
+            place(r["doc"], r["page"], r["start"], r["end"])
+        sections: List[RetrievedSection] = []
+        for w in windows:
+            text, _ = self._corpus.read(w["doc"], w["page"], w["start"], w["end"]) if w["end"] - w["start"] < MAX_READ \
+                else (self._read_long(w), "")
+            if text.strip():
+                sections.append(RetrievedSection(content=text, section_id=f"{w['doc']}:p{w['page']}:{w['start']}-{w['end']}",
+                                                 title=w["doc"], page=w["page"], doc_id=w["doc"]))
+        return sections
+
+    def _read_long(self, w: Dict[str, Any]) -> str:
+        lines = (self._corpus.pages.get(w["doc"]) or [[]])
+        if not (1 <= w["page"] <= len(lines)):
+            return ""
+        return "\n".join(lines[w["page"] - 1][w["start"] - 1 : w["end"]])
+
+    def _cited(self, evidence: List[Dict[str, Any]], read_log: List[Dict[str, Any]], docs: List[str],
+               finished: bool) -> List[RetrievedSection]:
+        sections: List[RetrievedSection] = []
+        for ev in evidence:
+            doc = str(ev.get("doc") or docs[0])
+            text, _ = self._corpus.read(doc, int(ev.get("page", 1)), int(ev.get("start_line", 1)), int(ev.get("end_line", 1)))
+            if text:
+                sections.append(RetrievedSection(content=text, section_id=f"{doc}:p{ev.get('page')}:{ev.get('start_line')}",
+                                                 title=doc, page=int(ev.get("page", 1)), doc_id=doc))
+        if not sections and not finished:
+            # Ran out of turns: what it read is what it found.
+            sections = [RetrievedSection(content=r["text"], section_id=f"{r['doc']}:p{r['page']}", title=str(r["doc"]),
+                                         page=r["page"], doc_id=str(r["doc"])) for r in read_log[::-1]]
+        return sections
 
     def setup(self, corpus: List[Doc]) -> None:
         t0 = time.perf_counter()
@@ -137,6 +212,7 @@ class AgenticGrepRetriever:
         read_log: List[Dict[str, Any]] = []
         evidence: List[Dict[str, Any]] = []
         turns = 0
+        nudges = 0
         finished = False
         t0 = time.perf_counter()
         try:
@@ -146,7 +222,18 @@ class AgenticGrepRetriever:
                 out = generate_patient(self.model, system=_SYSTEM, contents=contents, max_tokens=1024, tools=_tools())
                 usage.add(out.usage)
                 if not out.tool_calls:
-                    break
+                    # A reply in prose is not the end of a search: in the pilot
+                    # 2.5 Flash-Lite answered in text after one grep on 26 of 50
+                    # questions, read nothing on 21, and the loop stopped there
+                    # (HAL-3389). It is told to use its tools, at most
+                    # _MAX_NUDGES times, inside the same turn cap.
+                    if nudges >= _MAX_NUDGES or turns >= self.max_turns:
+                        break
+                    nudges += 1
+                    if out.raw_content is not None:
+                        contents.append(out.raw_content)
+                    contents.append(types.Content(role="user", parts=[types.Part(text=_NUDGE)]))
+                    continue
                 contents.append(out.raw_content)
                 responses = []
                 for call in out.tool_calls:
@@ -157,7 +244,9 @@ class AgenticGrepRetriever:
                         text, result = self._corpus.read(str(args.get("doc", docs[0])), int(args.get("page", 1)),
                                                          int(args.get("start_line", 1)), int(args.get("end_line", 40)))
                         if text:
-                            read_log.append({"doc": args.get("doc", docs[0]), "page": int(args.get("page", 1)), "text": text})
+                            start = max(1, int(args.get("start_line", 1)))
+                            read_log.append({"doc": str(args.get("doc", docs[0])), "page": int(args.get("page", 1)),
+                                             "start": start, "end": start + text.count("\n"), "text": text})
                     elif name == "finish":
                         evidence = list(args.get("evidence") or [])
                         finished = True
@@ -169,20 +258,11 @@ class AgenticGrepRetriever:
         except Exception as e:  # pragma: no cover - network
             return RetrievalResult(qid=question.qid, system=self.name, query=question.question, usage=usage,
                                    error=str(e), cold=cold, trace={"turns": turns})
-        sections: List[RetrievedSection] = []
-        for ev in evidence:
-            doc = str(ev.get("doc") or docs[0])
-            text, _ = self._corpus.read(doc, int(ev.get("page", 1)), int(ev.get("start_line", 1)), int(ev.get("end_line", 1)))
-            if text:
-                sections.append(RetrievedSection(content=text, section_id=f"{doc}:p{ev.get('page')}:{ev.get('start_line')}",
-                                                 title=doc, page=int(ev.get("page", 1)), doc_id=doc))
-        if not sections and not finished:
-            # Ran out of turns: what it read is what it found.
-            sections = [RetrievedSection(content=r["text"], section_id=f"{r['doc']}:p{r['page']}", title=str(r["doc"]),
-                                         page=r["page"], doc_id=str(r["doc"])) for r in read_log[::-1]]
+        sections = self._context(evidence, read_log, docs, finished)
         return RetrievalResult(
             qid=question.qid, system=self.name, query=question.question,
             sections=sections[:k], usage=usage, latency_ms=(time.perf_counter() - t0) * 1000.0,
             strategy="agentic-grep", cold=cold,
-            trace={"turns": turns, "finished": finished, "reads": len(read_log), "llm_calls": usage.llm_calls},
+            trace={"turns": turns, "finished": finished, "reads": len(read_log), "cited": len(evidence), "nudges": nudges,
+                   "context": self.context, "llm_calls": usage.llm_calls},
         )
