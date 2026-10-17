@@ -97,20 +97,62 @@ def fmt(v: float) -> str:
     return f"{v:,.4f}".rstrip("0").rstrip(".")
 
 
+def _plain(v: float) -> str:
+    """An inner result written back into its outer expression at full
+    precision (the shortest form that reads back as the same float), in a
+    form the number grammar reads: no exponent, no grouping."""
+    from decimal import Decimal
+
+    s = format(Decimal(repr(v)), "f")
+    if "." in s:  # repr's digits are exact; trailing zeros after the point are not digits
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
 def resolve(text: str) -> Tuple[str, List[Calculation]]:
     """Replace every <<expression>> in text with its value. A calculation
     that does not evaluate is left visible as the expression with a note, so
-    the grade sees that the answer has no number rather than a wrong one."""
+    the grade sees that the answer has no number rather than a wrong one.
+
+    A set-up may nest another (<<65,398 / <<(50,710 + 47,528) / 2>>>>): the
+    innermost is worked out first and its value feeds the one around it
+    (HAL-3245). Every level is recorded. An inner one that fails makes its
+    outer one fail. A << with no >>, or a >> with no <<, is not computable,
+    never a partial number."""
     calcs: List[Calculation] = []
-
-    def sub(m: re.Match) -> str:
-        expr = m.group(1).strip()
-        try:
-            v = evaluate(expr)
-        except CalcError as e:
-            calcs.append(Calculation(expr, None, str(e)))
-            return f"{expr} (could not be computed)"
-        calcs.append(Calculation(expr, v))
-        return f"{fmt(v)} (= {expr})"
-
-    return _EXPR.sub(sub, text), calcs
+    buf: List[str] = []
+    opens: List[int] = []  # where each still-open << starts in buf
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i:i + 2]
+        if two == "<<":
+            opens.append(len(buf))
+            i += 2
+            continue
+        if two == ">>":
+            i += 2
+            if not opens:
+                calcs.append(Calculation(">>", None, "a >> with no <<"))
+                continue
+            start = opens.pop()
+            expr = "".join(buf[start:]).strip()
+            del buf[start:]
+            try:
+                v = evaluate(expr)
+            except CalcError as e:
+                calcs.append(Calculation(expr, None, str(e)))
+                # inside another set-up the text stays, so the outer one fails too
+                buf.append(f"({expr})" if opens else f"{expr} (could not be computed)")
+                continue
+            calcs.append(Calculation(expr, v))
+            buf.append(_plain(v) if opens else f"{fmt(v)} (= {expr})")
+            continue
+        buf.append(text[i])
+        i += 1
+    while opens:  # a << never closed: everything after it is one failed set-up
+        start = opens.pop()
+        expr = "".join(buf[start:]).strip()
+        del buf[start:]
+        calcs.append(Calculation(expr, None, "a << with no >>"))
+        buf.append(f"{expr} (could not be computed)")
+    return "".join(buf), calcs
