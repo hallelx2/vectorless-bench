@@ -17,7 +17,7 @@ def test_evaluate(expr, want):
     assert evaluate(expr) == pytest.approx(want, rel=1e-4)
 
 
-@pytest.mark.parametrize("expr", ["__import__('os')", "2 ** 10", "1 / 0", "abs(-1)", "x + 1", "", "1 +",
+@pytest.mark.parametrize("expr", ["__import__('os')", "1 / 0", "abs(-1)", "x + 1", "", "1 +",
                                   "5 3", "1, 2", "1,2", "1,2345", "1\x00 + 2", "(" * 5000 + "1" + ")" * 5000,
                                   "9" * 400 + " * 1"])
 def test_only_arithmetic_is_evaluated(expr):
@@ -70,3 +70,24 @@ def test_an_inner_result_keeps_its_precision():
     # small and large inner results keep every digit (no rounding to 12 places)
     assert resolve("<<1 / <<0.0000000000001 * 1>>>>")[1][-1].value == pytest.approx(1e13)
     assert resolve("<<<<1 / 3>> * 1000000000000>>")[1][-1].value == pytest.approx(1e12 / 3)
+
+
+@pytest.mark.parametrize("expr,want", [
+    ("((65984 / 65398) ** (1/2) - 1) * 100", 0.44700),   # FinanceBench 03718, a two-year CAGR
+    ("((65,984 / 65,398) ^ (1 / 2) - 1) * 100", 0.44700),
+    ("16 ** 0.5", 4.0),
+    ("2 ** 3 ** 2", 512.0),        # right-associative
+    ("-2 ** 2", -4.0),             # the power binds before the sign
+    ("(-2) ** 2", 4.0),
+    ("2 ** -1", 0.5),
+    ("2 ** 10", 1024.0),
+])
+def test_powers(expr, want):
+    assert evaluate(expr) == pytest.approx(want, rel=1e-4)
+
+
+@pytest.mark.parametrize("expr", ["(10 ** 100 * 10 ** 100 * 10 ** 100 * 10 ** 100) ** 0",
+                                  "(10 ** 100 * 10 ** 100 * 10 ** 100 * 10 ** 100) * 0", "(-8) ** (1/3)", "2 ** 101", "10 ** 99 ** 2", "0 ** -1", "(10 ** 100) ** 4"])
+def test_powers_that_are_refused(expr):
+    with pytest.raises(CalcError):
+        evaluate(expr)

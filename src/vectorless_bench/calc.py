@@ -7,7 +7,7 @@ inputs, gemini-2.5-flash-lite wrote ``365 * 1,380.5 / 7,890 = 67.75`` (it is
 63.86), so a grade on its arithmetic grades the model, not what the system
 retrieved.
 
-Only numbers, + - * /, parentheses and unary signs are accepted. Thousands
+Only numbers, + - * /, powers (** or ^), parentheses and unary signs are accepted. Thousands
 separators, currency signs and a trailing % on a number are read the way a
 filing writes them ("$1,174", "12.5%" is 0.125).
 """
@@ -50,8 +50,35 @@ def _normalise(expr: str) -> str:
             return f"({s[:-1]}/100)"
         return s
 
-    e = expr.replace("×", "*").replace("÷", "/").replace("−", "-").replace("–", "-")
+    e = expr.replace("×", "*").replace("÷", "/").replace("−", "-").replace("–", "-").replace("^", "**")
     return _NUMBER.sub(num, e)
+
+
+# A power's exponent is a count of periods or a root (CAGR over n years is
+# (end / start) ** (1 / n)); past this it is not a filing's arithmetic.
+_MAX_EXPONENT = 100
+
+
+def _power(base: float, exp: float) -> float:
+    """base ** exp for compound growth and roots (HAL-3274), refused rather
+    than guessed: no huge exponent, no fractional power of a negative number
+    (that has no real value), nothing that overflows."""
+    if not (math.isfinite(base) and math.isfinite(exp)):
+        # inf ** 0 is 1: an operand that already overflowed must not vanish
+        raise CalcError("an operand of the power is not a finite number")
+    if abs(exp) > _MAX_EXPONENT:
+        raise CalcError(f"exponent {exp} is beyond {_MAX_EXPONENT}")
+    if base < 0 and exp != int(exp):
+        raise CalcError("a fractional power of a negative number has no real value")
+    if base == 0 and exp < 0:
+        raise CalcError("division by zero")
+    try:
+        v = base ** exp
+    except OverflowError as e:
+        raise CalcError("result too large") from e
+    if isinstance(v, complex) or math.isnan(v) or math.isinf(v):
+        raise CalcError("not a finite real number")
+    return float(v)
 
 
 def evaluate(expr: str) -> float:
@@ -71,11 +98,16 @@ def evaluate(expr: str) -> float:
                 return float(node.value)
             except OverflowError as e:
                 raise CalcError("number too large") from e
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            return _power(ev(node.left), ev(node.right))
         if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
             left, right = ev(node.left), ev(node.right)
             if isinstance(node.op, ast.Div) and right == 0:
                 raise CalcError("division by zero")
-            return _OPS[type(node.op)](left, right)
+            v = _OPS[type(node.op)](left, right)
+            if not math.isfinite(v):  # an overflow anywhere fails the whole set-up
+                raise CalcError("an intermediate result is not a finite number")
+            return v
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             v = ev(node.operand)
             return v if isinstance(node.op, ast.UAdd) else -v
