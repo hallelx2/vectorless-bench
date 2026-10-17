@@ -25,8 +25,8 @@ _EXPR = re.compile(r"<<(.+?)>>", re.S)
 # A currency sign may be followed by a space; a bare number may not be
 # preceded by one (so "5 3" stays two numbers and fails). Thousands
 # separators only in real groups: "1,174" is 1174, "1,2" and "1, 2" are not
-# numbers and fail rather than read as 12.
-_NUMBER = re.compile(r"(?:[$€£]\s*)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?|(?:[$€£]\s*)?\.\d+%?")
+# numbers and fail rather than read as 12, and "1,2345" is not 12345.
+_NUMBER = re.compile(r"(?:[$€£]\s*)?(?:\d{1,3}(?:,\d{3})+(?![\d])|\d+)(?:\.\d+)?%?|(?:[$€£]\s*)?\.\d+%?")
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv}
 
 

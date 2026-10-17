@@ -18,7 +18,7 @@ def test_evaluate(expr, want):
 
 
 @pytest.mark.parametrize("expr", ["__import__('os')", "2 ** 10", "1 / 0", "abs(-1)", "x + 1", "", "1 +",
-                                  "5 3", "1, 2", "1,2", "1\x00 + 2", "(" * 5000 + "1" + ")" * 5000,
+                                  "5 3", "1, 2", "1,2", "1,2345", "1\x00 + 2", "(" * 5000 + "1" + ")" * 5000,
                                   "9" * 400 + " * 1"])
 def test_only_arithmetic_is_evaluated(expr):
     with pytest.raises(CalcError):
